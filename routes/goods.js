@@ -3,7 +3,7 @@ const router = express.Router();
 const db = require('../config/db');
 
 // 获取商品列表
-router.get('/', async (req, res) => {
+router.get('/query', async (req, res) => {
   try {
     console.log('=== 开始执行数据库查询 ===');
     // 执行查询
