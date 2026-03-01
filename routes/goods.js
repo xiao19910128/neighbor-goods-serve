@@ -5,10 +5,21 @@ const db = require('../config/db');
 // 获取商品列表
 router.get('/query', async (req, res) => {
   try {
-    console.log('=== 开始执行数据库查询 ===');
-    // 执行查询
-    const [rows] = await db.execute('SELECT * FROM goods');
-    // 返回结果
+    // 1. 获取查询参数：name（商品名称关键词，可选）
+    const { name } = req.query;
+
+     // 2. 构建SQL语句和参数（支持过滤/全量查询）
+    let sql = 'SELECT * FROM goods';
+    const params = [];
+    // 如果传了name参数，添加模糊查询条件
+    if (name && name.trim() !== '') {
+      sql += ' WHERE name LIKE ?';
+      params.push(`%${name.trim()}%`); // % 是MySQL模糊查询通配符，匹配任意字符序列
+    }
+
+    // 3. 执行查询--params需要过滤的参数数组
+    const [rows] = await db.execute(sql, params); // 注意：此处用的是execute而非query，因为我们要获取插入行的ID
+    // 4. 返回结果
     res.status(200).json({
       code: 200,
       message: '获取商品列表成功',
