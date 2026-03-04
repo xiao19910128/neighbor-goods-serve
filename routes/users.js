@@ -123,17 +123,17 @@ router.post('/add', async (req, res) => {
 router.delete('/delete/:id', async (req, res) => {
   try {
     // 1. 获取请求参数中的ID
-    const {id} = req.params;
+    const {user_id} = req.params;
     // 2. 必填入参校验--非空
-    if (!id) {
+    if (!user_id) {
       return res.status(400).json({
         code: 400,
         message: '用户ID不能为空'
       });
     }
-    const usersId = Number(id); // 转换为数字
+    const usersId = Number(user_id); // 转换为数字
     // 3. 先检查对应ID的用户是否存在
-    const [checkResult] = await db.execute('SELECT * FROM users WHERE id=?', [usersId]);
+    const [checkResult] = await db.execute('SELECT * FROM users WHERE user_id=?', [usersId]);
     if (checkResult.length === 0) {
       return res.status(404).json({
         code: 404,
@@ -141,7 +141,7 @@ router.delete('/delete/:id', async (req, res) => {
       });
     }
     // 4. 执行删除SQL（用?占位符防SQL注入）
-    await db.execute('DELETE FROM users WHERE id=?', [usersId]);
+    await db.execute('DELETE FROM users WHERE user_id=?', [usersId]);
     // 5. 返回成功响应
     res.status(200).json({
       code: 200,

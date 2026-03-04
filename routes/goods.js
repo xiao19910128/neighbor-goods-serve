@@ -44,7 +44,7 @@ router.get('/query', async (req, res) => {
 router.post('/add', async (req, res) => {
   try {
     // 1. 获取请求体中的数据--前端入参
-    const { name, price } = req.body;
+    const { name, price, description, status, image_url } = req.body;
     // 2. 参数校验（必填项检查）
     if (!name) {
       return res.status(400).json({
@@ -60,8 +60,8 @@ router.post('/add', async (req, res) => {
     }
     // 3. 执行插入SQL（用?占位符防止SQL注入）
     const [result] = await db.execute(
-      'INSERT INTO goods (name, category, price, description, status, image_url) VALUES (?, ?, ?, ?, ?, ?)',
-      [name, category, Number(price), description || null, status ?? 1, image_url || null] // 给可选字段设默认值
+      'INSERT INTO goods (name, price, description, status, image_url) VALUES (?, ?, ?, ?, ?)',
+      [name, Number(price), description || null, status ?? 1, image_url || null] // 给可选字段设默认值
     );
 
     // 4. 返回成功响应（包含新增商品的ID）
@@ -69,7 +69,7 @@ router.post('/add', async (req, res) => {
       code: 200,
       message: '商品添加成功',
       data: {
-        id: result.id, // result为上述插入SQL执行后的结果--这里的返回结果可以不用返回给前端
+        goods_id: result.goods_id, // result为上述插入SQL执行后的结果--这里的返回结果可以不用返回给前端
       }
     });
   } catch (error) {
@@ -84,17 +84,17 @@ router.post('/add', async (req, res) => {
 router.delete('/delete/:id', async (req, res) => {
   try {
     // 1. 获取请求参数中的ID
-    const {id} = req.params;
+    const {goods_id} = req.params;
     // 2. 必填入参校验--非空
-    if (!id) {
+    if (!goods_id) {
       return res.status(400).json({
         code: 400,
         message: '商品ID不能为空'
       });
     }
-    const goodsId = Number(id); // 转换为数字
+    const goodsId = Number(goods_id); // 转换为数字
     // 3. 先检查对应ID的商品是否存在
-    const [checkResult] = await db.execute('SELECT * FROM goods WHERE id=?', [goodsId]);
+    const [checkResult] = await db.execute('SELECT * FROM goods WHERE goods_id=?', [goodsId]);
     if (checkResult.length === 0) {
       return res.status(404).json({
         code: 404,
@@ -102,7 +102,7 @@ router.delete('/delete/:id', async (req, res) => {
       });
     }
     // 4. 执行删除SQL（用?占位符防SQL注入）
-    await db.execute('DELETE FROM goods WHERE id=?', [goodsId]);
+    await db.execute('DELETE FROM goods WHERE goods_id=?', [goodsId]);
     // 5. 返回成功响应
     res.status(200).json({
       code: 200,
@@ -117,4 +117,59 @@ router.delete('/delete/:id', async (req, res) => {
   }
 })
 
+// 发布商品接口
+router.post('/publish', async (req, res) => {
+  const { name, price, category_id, user_id, description } = req.body;
+  console.log('开始发布商品:', { name, price, category_id, user_id });
+
+  // 参数校验
+  if (!name || !price || !user_id || !category_id) {
+    return res.status(400).json({ code: -1, msg: '缺少必填参数' });
+  }
+  if (typeof price !== 'number' || price <= 0) {
+    return res.status(400).json({ code: -1, msg: '价格必须是大于0的数字' });
+  }
+  if (!Number.isInteger(user_id) || user_id <= 0 || !Number.isInteger(category_id) || category_id <= 0) {
+    return res.status(400).json({ code: -1, msg: '用户ID和分类ID必须是正整数' });
+  }
+
+  const connection = await db.getConnection();
+
+  try {
+    await connection.beginTransaction();
+
+    // 校验用户是否存在
+    const [[user]] = await connection.query('SELECT 1 FROM users WHERE user_id = ? LIMIT 1', [user_id]);
+    if (!user) {
+      await connection.rollback();
+      connection.release();
+      return res.status(400).json({ code: -1, msg: '用户不存在' });
+    }
+
+    // 校验分类是否存在
+    const [[category]] = await connection.query('SELECT 1 FROM category WHERE category_id = ? LIMIT 1', [category_id]);
+    if (!category) {
+      await connection.rollback();
+      connection.release();
+      return res.status(400).json({ code: -1, msg: '分类不存在' });
+    }
+
+    // 插入商品数据
+    const [result] = await connection.execute(
+      'INSERT INTO goods (name, price, category_id, user_id, description, status) VALUES (?, ?, ?, ?, ?, 0)',
+      [name, price, category_id, user_id, description]
+    );
+
+    await connection.commit();
+    connection.release();
+    console.log('商品发布成功:', { goodsId: result.insertId });
+    res.status(200).json({ code: 0, msg: '发布成功, 等待审核', goodsId: result.insertId });
+
+  } catch (err) {
+    await connection.rollback();
+    connection.release();
+    console.error('发布商品失败:', err);
+    res.status(500).json({ code: -1, msg: '发布失败', error: err.message });
+  }
+});
 module.exports = router;
