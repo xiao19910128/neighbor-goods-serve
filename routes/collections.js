@@ -1,93 +1,92 @@
+// routes/admin/category.js
 const express = require('express');
 const router = express.Router();
-const db = require('../config/db');
+const db = require('../../config/db');
 
-// 获取收藏列表
-router.get('/query', async (req, res) => {
-  try {
-    console.log('=== 开始执行数据库查询 ===');
-    // 执行查询
-    const [rows] = await db.execute('SELECT * FROM collections');
-    // 返回结果
-    res.status(200).json({
-      code: 200,
-      message: '获取收藏列表成功',
-      data: rows
-    });
-  } catch (error) {
-    // 强制打印完整错误（重点！）
-    console.error('=== 数据库查询错误 ===');
-    // 返回友好提示
-    res.status(500).json({
-      code: 500,
-      message: '服务器内部错误',
-      error: error.message // 调试用，生产环境可删除
-    });
-  }
-});
-
-// 新增收藏
+// 1. 管理端-添加分类
 router.post('/add', async (req, res) => {
   try {
-    // 1. 获取请求体中的数据--前端入参
-    const { content } = req.body;
-    // 2. 执行插入SQL（用?占位符防止SQL注入）
+    const { name, sort = 0 } = req.body;
+    if (!name) {
+      return res.status(400).json({ code: 400, message: '分类名称不能为空' });
+    }
+
+    // 检查分类是否已存在
+    const [exist] = await db.execute('SELECT id FROM category WHERE name = ?', [name]);
+    if (exist.length > 0) {
+      return res.status(400).json({ code: 400, message: '该分类已存在' });
+    }
+
+    // 添加分类
     const [result] = await db.execute(
-      'INSERT INTO collections (content) VALUES (?)',
-      [content] // 给可选字段设默认值
+      'INSERT INTO category (name, sort) VALUES (?, ?)',
+      [name, sort]
     );
 
-    // 4. 返回成功响应（包含新增商品的ID）
-    res.status(200).json({
-      code: 200,
-      message: '收藏成功',
-      data: {
-        id: result.id, // result为上述插入SQL执行后的结果--这里的返回结果可以不用返回给前端
-      }
-    });
-  } catch (error) {
-    res.status(500).json({
-      code: 500,
-      message: '服务器内部错误',
-      error: error.message
-    });
+    res.json({ code: 200, message: '添加分类成功', data: { id: result.insertId } });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ code: 500, message: '服务器内部错误' });
   }
 });
 
+// 2. 管理端-编辑分类
+router.put('/edit/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, sort, status } = req.body;
+
+    // 检查分类是否存在
+    const [exist] = await db.execute('SELECT id FROM category WHERE id = ?', [id]);
+    if (exist.length === 0) {
+      return res.status(400).json({ code: 400, message: '分类不存在' });
+    }
+
+    // 编辑分类
+    await db.execute(
+      'UPDATE category SET name = ?, sort = ?, status = ? WHERE id = ?',
+      [name, sort, status, id]
+    );
+
+    res.json({ code: 200, message: '编辑分类成功' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ code: 500, message: '服务器内部错误' });
+  }
+});
+
+// 3. 管理端-删除分类
 router.delete('/delete/:id', async (req, res) => {
   try {
-    // 1. 获取请求参数中的ID
-    const {id} = req.params;
-    // 2. 必填入参校验--非空
-    if (!id) {
-      return res.status(400).json({
-        code: 400,
-        message: '收藏ID不能为空'
-      });
+    const { id } = req.params;
+
+    // 检查分类是否被商品关联（可选）
+    const [goods] = await db.execute('SELECT id FROM goods WHERE category_id = ?', [id]);
+    if (goods.length > 0) {
+      return res.status(400).json({ code: 400, message: '该分类下有商品，无法删除' });
     }
-    const collectionsId = Number(id); // 转换为数字
-    // 3. 先检查对应ID的收藏是否存在
-    const [checkResult] = await db.execute('SELECT * FROM collections WHERE id=?', [collectionsId]);
-    if (checkResult.length === 0) {
-      return res.status(404).json({
-        code: 404,
-        message: '删除失败，该收藏不存在'
-      });
-    }
-    // 4. 执行删除SQL（用?占位符防SQL注入）
-    await db.execute('DELETE FROM collections WHERE id=?', [collectionsId]);
-    // 5. 返回成功响应
-    res.status(200).json({
-      code: 200,
-      message: '收藏删除成功',
-    });
-  } catch (error) {
-    res.status(500).json({
-      code: 500,
-      message: '服务器内部错误',
-      error: error.message
-    });
+
+    // 删除分类
+    await db.execute('DELETE FROM category WHERE id = ?', [id]);
+    res.json({ code: 200, message: '删除分类成功' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ code: 500, message: '服务器内部错误' });
   }
-})
+});
+
+// 4. 查询所有启用的分类（客户端/管理端通用）
+router.get('/list', async (req, res) => {
+  try {
+    const [rows] = await db.execute(
+      'SELECT id, name FROM category WHERE status = 1 ORDER BY sort DESC, id ASC'
+    );
+    res.json({ code: 200, message: '查询成功', data: rows });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ code: 500, message: '服务器内部错误' });
+  }
+});
+
 
 module.exports = router;

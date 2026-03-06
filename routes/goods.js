@@ -151,7 +151,7 @@ router.post('/publish', async (req, res) => {
     if (!category) {
       await connection.rollback();
       connection.release();
-      return res.status(400).json({ code: -1, msg: '分类不存在' });
+      return res.status(400).json({ code: -1, msg: '分类不存在', error: '分类不存在' });
     }
 
     // 插入商品数据
