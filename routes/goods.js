@@ -5,38 +5,37 @@ const db = require('../config/db');
 // 获取商品列表
 router.get('/query', async (req, res) => {
   try {
-    // 1. 获取查询参数：name（商品名称关键词，可选）
+    // 1. 获取查询参数
     const { name } = req.query;
 
-     // 2. 构建SQL语句和参数（支持过滤/全量查询）
-    let sql = 'SELECT * FROM goods';
+    // 2. 构建SQL语句和参数
+    let sql = `
+      SELECT g.*, u.username AS publish_user, c.name AS category_name
+      FROM goods g
+      LEFT JOIN users u ON g.user_id = u.user_id
+      LEFT JOIN category c ON g.category_id = c.category_id
+      WHERE g.audit_status = 1
+    `;
+    // WHERE g.audit_status = 1 AND g.status = 1 // 待确认是否需要上架状态，上架状态为1，下架状态为0
     const params = [];
-    // 如果传了name参数，添加模糊查询条件
+    // 如果传了 name 参数，添加模糊查询条件
     if (name && name.trim() !== '') {
-      sql += ' WHERE name LIKE ?';
-      params.push(`%${name.trim()}%`); // % 是MySQL模糊查询通配符，匹配任意字符序列
+      sql += ' AND g.name LIKE ?';
+      params.push(`%${name.trim()}%`);
     }
+    // 最后加上排序
+    sql += ' ORDER BY g.release_time DESC';
+    // 3. 执行查询
+    const [rows] = await db.execute(sql, params);
 
-    // 3. 执行查询--params需要过滤的参数数组
-    const [rows] = await db.execute(sql, params); // 注意：此处用的是execute而非query，因为我们要获取插入行的ID
-    // 4. 返回结果
-    res.status(200).json({
+    res.json({
       code: 200,
       message: '获取商品列表成功',
       data: rows
     });
-  } catch (error) {
-    // 强制打印完整错误（重点！）
-    console.error('=== 数据库查询错误 ===');
-    console.error('错误类型：', error.name);
-    console.error('错误信息：', error.message);
-    console.error('错误堆栈：', error.stack);
-    // 返回友好提示
-    res.status(500).json({
-      code: 500,
-      message: '服务器内部错误',
-      error: error.message // 调试用，生产环境可删除
-    });
+  } catch (err) {
+    console.error('数据库查询错误 ===', err);
+    res.status(500).json({ code: 500, message: '服务器内部错误' });
   }
 });
 
@@ -81,6 +80,111 @@ router.post('/add', async (req, res) => {
   }
 });
 
+// 发布商品接口
+router.post('/publish', async (req, res) => {
+    const { name, price, category_id, user_id, description, images} = req.body;
+    // 参数校验
+    if (!name || !price || !category_id || !user_id) {
+      return res.status(400).json({ code: 400, message: '必填字段不能为空' });
+    }
+
+  const connection = await db.getConnection();
+  try {    
+    await connection.beginTransaction();
+    const [[user]] = await connection.query('SELECT 1 FROM users WHERE user_id = ? LIMIT 1', [user_id]);
+    if (!user) {
+      await connection.rollback();
+      connection.release();
+      return res.status(400).json({ code: -1, msg: '用户不存在' });
+    }
+
+    // 校验分类是否存在
+    const [[category]] = await connection.query('SELECT 1 FROM category WHERE category_id = ? LIMIT 1', [category_id]);
+    if (!category) {
+      await connection.rollback();
+      connection.release();
+      return res.status(400).json({ code: -1, msg: '分类不存在', error: '分类不存在' });
+    }
+
+
+    // 插入商品，审核状态默认0（待审核）
+    const [result] = await connection.execute(
+      `INSERT INTO goods 
+       (name, price, description, images, category_id, user_id, audit_status) 
+       VALUES (?, ?, ?, ?, ?, ?, 0)`,
+      [name, price, description, images, category_id, user_id]
+    );
+
+    await connection.commit();
+    connection.release();
+    res.json({
+      code: 200,
+      msg: '发布成功，请等待管理员审核',
+      data: { goodsId: result.insertId }
+    });
+  } catch (err) {
+    await connection.rollback();
+    connection.release();
+    console.error('发布商品失败:', err);
+    res.status(500).json({ code: -1, msg: '发布失败', error: err.message });
+  }
+});
+
+// 管理端-获取待审核商品列表
+router.get('/pending-audit', async (req, res) => {
+  try {
+    const [rows] = await db.execute(
+      `SELECT g.*, u.username AS publish_user, c.name AS category_name 
+       FROM goods g 
+       LEFT JOIN users u ON g.user_id = u.user_id 
+       LEFT JOIN category c ON g.category_id = c.category_id 
+       WHERE g.audit_status = 0 
+       ORDER BY g.release_time DESC`
+    );
+
+    res.json({
+      code: 200,
+      message: '查询成功',
+      data: rows
+    });
+  } catch (err) {
+    console.error('查询待审核商品错误:', err);
+    res.status(500).json({ code: 500, message: '服务器内部错误' });
+  }
+});
+
+// 管理端-审核商品（通过/拒绝）
+router.post('/audit', async (req, res) => {
+  try {
+    const { goods_id, auditor_id, audit_status, audit_remark = '' } = req.body;
+    
+    // 校验参数
+    if (!goods_id || !audit_status || ![1,2].includes(audit_status)) {
+      return res.status(400).json({ code: 400, message: '审核参数错误' });
+    }
+
+    // 检查商品是否存在
+    const [exist] = await db.execute('SELECT goods_id FROM goods WHERE goods_id = ?', [goods_id]);
+    if (exist.length === 0) {
+      return res.status(400).json({ code: 400, message: '商品不存在' });
+    }
+
+    // 更新审核状态
+    await db.execute(
+      `UPDATE goods 
+       SET audit_status = ?, audit_remark = ?, audit_time = NOW() 
+       WHERE goods_id = ?`,
+      [audit_status, audit_remark, goods_id]
+    );
+
+    const msg = audit_status === 1 ? '审核通过' : '审核拒绝';
+    res.json({ code: 200, message: msg, data: null });
+  } catch (err) {
+    console.error('审核商品错误:', err);
+    res.status(500).json({ code: 500, message: '服务器内部错误' });
+  }
+});
+
 router.delete('/delete/:id', async (req, res) => {
   try {
     // 1. 获取请求参数中的ID
@@ -117,59 +221,4 @@ router.delete('/delete/:id', async (req, res) => {
   }
 })
 
-// 发布商品接口
-router.post('/publish', async (req, res) => {
-  const { name, price, category_id, user_id, description } = req.body;
-  console.log('开始发布商品:', { name, price, category_id, user_id });
-
-  // 参数校验
-  if (!name || !price || !user_id || !category_id) {
-    return res.status(400).json({ code: -1, msg: '缺少必填参数' });
-  }
-  if (typeof price !== 'number' || price <= 0) {
-    return res.status(400).json({ code: -1, msg: '价格必须是大于0的数字' });
-  }
-  if (!Number.isInteger(user_id) || user_id <= 0 || !Number.isInteger(category_id) || category_id <= 0) {
-    return res.status(400).json({ code: -1, msg: '用户ID和分类ID必须是正整数' });
-  }
-
-  const connection = await db.getConnection();
-
-  try {
-    await connection.beginTransaction();
-
-    // 校验用户是否存在
-    const [[user]] = await connection.query('SELECT 1 FROM users WHERE user_id = ? LIMIT 1', [user_id]);
-    if (!user) {
-      await connection.rollback();
-      connection.release();
-      return res.status(400).json({ code: -1, msg: '用户不存在' });
-    }
-
-    // 校验分类是否存在
-    const [[category]] = await connection.query('SELECT 1 FROM category WHERE category_id = ? LIMIT 1', [category_id]);
-    if (!category) {
-      await connection.rollback();
-      connection.release();
-      return res.status(400).json({ code: -1, msg: '分类不存在', error: '分类不存在' });
-    }
-
-    // 插入商品数据
-    const [result] = await connection.execute(
-      'INSERT INTO goods (name, price, category_id, user_id, description, status) VALUES (?, ?, ?, ?, ?, 0)',
-      [name, price, category_id, user_id, description]
-    );
-
-    await connection.commit();
-    connection.release();
-    console.log('商品发布成功:', { goodsId: result.insertId });
-    res.status(200).json({ code: 0, msg: '发布成功, 等待审核', goodsId: result.insertId });
-
-  } catch (err) {
-    await connection.rollback();
-    connection.release();
-    console.error('发布商品失败:', err);
-    res.status(500).json({ code: -1, msg: '发布失败', error: err.message });
-  }
-});
 module.exports = router;
