@@ -82,7 +82,7 @@ router.post('/add', async (req, res) => {
 
 // 发布商品接口
 router.post('/publish', async (req, res) => {
-    const { name, price, category_id, user_id, description, images} = req.body;
+    const { name, price, category_id, user_id, description='', image_url=''} = req.body;
     // 参数校验
     if (!name || !price || !category_id || !user_id) {
       return res.status(400).json({ code: 400, message: '必填字段不能为空' });
@@ -110,9 +110,9 @@ router.post('/publish', async (req, res) => {
     // 插入商品，审核状态默认0（待审核）
     const [result] = await connection.execute(
       `INSERT INTO goods 
-       (name, price, description, images, category_id, user_id, audit_status) 
+       (name, price, description, image_url, category_id, user_id, audit_status) 
        VALUES (?, ?, ?, ?, ?, ?, 0)`,
-      [name, price, description, images, category_id, user_id]
+      [name, price, description, image_url, category_id, user_id]
     );
 
     await connection.commit();
