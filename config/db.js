@@ -10,7 +10,9 @@ const dbConfig = {
   charset: 'utf8mb4',
   waitForConnections: true,
   connectionLimit: 10,
-  queueLimit: 0
+  queueLimit: 0,
+  timezone: '+08:00',  // 指定连接时区为东八区
+  dateStrings: true // 让 DATETIME 直接返回 "YYYY-MM-DD HH:mm:ss" 格式字符串
 };
 
 // 只有当密码不为空时，才添加 password 配置（关键）
