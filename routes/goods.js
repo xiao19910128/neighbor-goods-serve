@@ -110,9 +110,18 @@ router.post('/publish', async (req, res) => {
     // 插入商品，审核状态默认0（待审核）
     const [result] = await connection.execute(
       `INSERT INTO goods 
-       (name, price, description, image_url, category_id, user_id, audit_status) 
-       VALUES (?, ?, ?, ?, ?, ?, 0)`,
-      [name, price, description, image_url, category_id, user_id]
+      (name, price, description, image_url, category_id, user_id, audit_status, 
+        province, city, district, street, detail_address)
+      VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
+      [
+        name, price, description, image_url, category_id, user_id,
+        // 新增地址字段，从 req.body 取
+        req.body.province || '上海市',   // 默认上海市
+        req.body.city || '上海市',       // 默认上海市
+        req.body.district || '闵行区',   // 默认闵行区
+        req.body.street || '梅陇镇',     // 默认梅陇镇（你的核心社区）
+        req.body.detail_address || ''    // 详细地址可为空
+      ]
     );
 
     await connection.commit();
