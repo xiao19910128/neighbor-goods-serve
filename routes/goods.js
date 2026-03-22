@@ -1,7 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../config/db');
-
+const { pool } = require('../config/db');
+const util = require('util');
 // 获取商品列表
 router.get('/query', async (req, res) => {
   try {
@@ -229,5 +230,70 @@ router.delete('/delete/:id', async (req, res) => {
     });
   }
 })
+// 获取当前用户发布的商品列表
+router.get('/published', async (req, res) => {
+  try {
+    const { userId, user_id, page = 1, size = 10 } = req.query;
+    const finalUserId = userId || user_id;
+    const offset = (page - 1) * size;
+
+    if (!finalUserId) {
+      return res.status(400).json({ code: 400, msg: 'userId 不能为空' });
+    }
+
+    // ✅ 和发布商品接口一样：直接从 db 获取连接
+    const connection = await db.getConnection();
+    try {
+      // 1. 查询总数（直接用 connection.query，不需要包装）
+      const [[countResult]] = await connection.query(
+        'SELECT COUNT(*) AS total FROM goods WHERE user_id = ?',
+        [finalUserId]
+      );
+      const total = countResult.total;
+
+      // 2. 查询列表（直接用 connection.query）
+      const [goodsList] = await connection.query(
+        `SELECT goods_id, name, price, image_url, street, detail_address, release_time
+         FROM goods 
+         WHERE user_id = ? 
+         ORDER BY release_time DESC 
+         LIMIT ? OFFSET ?`,
+        [finalUserId, size, offset]
+      );
+
+      res.json({
+        code: 200,
+        data: { list: goodsList, total }
+      });
+    } finally {
+      // ✅ 确保连接一定释放
+      connection.release();
+    }
+
+  } catch (err) {
+    console.error('获取发布商品失败:', err);
+    res.status(500).json({ code: 500, msg: '获取发布商品失败', error: err.message });
+  }
+});
+// 删除商品接口
+router.post('/deletePublished', async (req, res) => {
+  try {
+    const { goods_id } = req.body;
+    const connection = await mysql.createConnection(dbConfig);
+    
+    await connection.execute(
+      'DELETE FROM goods WHERE goods_id = ?',
+      [goods_id]
+    );
+    await connection.end();
+
+    res.json({
+      code: 200,
+      msg: '删除成功'
+    });
+  } catch (err) {
+    res.status(500).json({ code: 500, msg: '删除商品失败' });
+  }
+});
 
 module.exports = router;

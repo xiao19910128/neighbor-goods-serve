@@ -129,7 +129,7 @@ router.put('/edit/:category_id', async (req, res) => {
     );
     if (sameName.length > 0) {
       return res.status(400).json({
-        code: 400,
+        code: 400,                    
         message: '该分类名称已被其他分类使用'
       });
     }
