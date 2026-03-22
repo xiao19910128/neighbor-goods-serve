@@ -275,24 +275,48 @@ router.get('/published', async (req, res) => {
     res.status(500).json({ code: 500, msg: '获取发布商品失败', error: err.message });
   }
 });
+
 // 删除商品接口
 router.post('/deletePublished', async (req, res) => {
   try {
     const { goods_id } = req.body;
-    const connection = await mysql.createConnection(dbConfig);
-    
-    await connection.execute(
-      'DELETE FROM goods WHERE goods_id = ?',
-      [goods_id]
-    );
-    await connection.end();
 
-    res.json({
-      code: 200,
-      msg: '删除成功'
-    });
+    // 1. 参数校验
+    if (!goods_id) {
+      return res.status(400).json({ code: 400, msg: 'goods_id 不能为空' });
+    }
+
+    // 2. 用连接池获取连接（和项目其他接口保持一致）
+    const connection = await db.getConnection();
+    try {
+      // 3. 执行删除
+      const [result] = await connection.execute(
+        'DELETE FROM goods WHERE goods_id = ?',
+        [goods_id]
+      );
+
+      // 4. 判断是否真的删除了数据
+      if (result.affectedRows === 0) {
+        return res.status(404).json({ code: 404, msg: '商品不存在或已删除' });
+      }
+
+      res.json({
+        code: 200,
+        msg: '删除成功'
+      });
+    } finally {
+      // 5. 确保连接一定释放回池
+      connection.release();
+    }
+
   } catch (err) {
-    res.status(500).json({ code: 500, msg: '删除商品失败' });
+    // 打印完整错误日志，方便排查
+    console.error('删除商品失败:', err);
+    res.status(500).json({ 
+      code: 500, 
+      msg: '删除商品失败',
+      error: err.message // 开发环境返回具体错误信息
+    });
   }
 });
 
