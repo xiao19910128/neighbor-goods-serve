@@ -8,6 +8,7 @@ const evaluationsRouter = require('./routes/evaluations');
 // const collectionsRouter = require('./routes/collections');
 const categoryRouter = require('./routes/category');
 const uploadRouter = require('./routes/upload');
+const proxyRouter = require('./routes/proxy');
 // 解析 JSON 请求体
 app.use(express.json());
 
@@ -17,6 +18,7 @@ app.use('/api/evaluations', evaluationsRouter);
 // app.use('/api/collections', collectionsRouter);
 app.use('/api/category', categoryRouter);
 app.use('/api/upload', uploadRouter);
+app.use('/api/proxy', proxyRouter); // 代理腾讯地图逆地理编码 API
 
 // 测试接口
 app.get('/api/hello', (req, res) => {
