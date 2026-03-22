@@ -253,7 +253,7 @@ router.get('/published', async (req, res) => {
 
       // 2. 查询列表（直接用 connection.query）
       const [goodsList] = await connection.query(
-        `SELECT goods_id, name, price, image_url, street, detail_address, release_time
+        `SELECT goods_id, name, price, image_url, street, detail_address, release_time, audit_status
          FROM goods 
          WHERE user_id = ? 
          ORDER BY release_time DESC 
@@ -295,5 +295,91 @@ router.post('/deletePublished', async (req, res) => {
     res.status(500).json({ code: 500, msg: '删除商品失败' });
   }
 });
+
+
+// 获取商品详情
+router.get('/detail', async (req, res) => {
+  try {
+    const { goods_id } = req.query;
+    if (!goods_id) {
+      return res.status(400).json({ code: 400, msg: 'goods_id 不能为空' });
+    }
+
+    const connection = await db.getConnection();
+    try {
+      const [[goods]] = await connection.query(
+        `SELECT goods_id, name, price, description, image_url, 
+                street, detail_address, category_id, user_id, audit_status
+         FROM goods 
+         WHERE goods_id = ?`,
+        [goods_id]
+      );
+
+      if (!goods) {
+        return res.status(404).json({ code: 404, msg: '商品不存在' });
+      }
+
+      res.json({
+        code: 200,
+        data: goods
+      });
+    } finally {
+      connection.release();
+    }
+  } catch (err) {
+    console.error('获取商品详情失败:', err);
+    res.status(500).json({ code: 500, msg: '获取商品详情失败' });
+  }
+});
+
+// 更新商品信息
+router.post('/update', async (req, res) => {
+  try {
+    const { goods_id, name, price, description, image_url, 
+            street, detail_address, category_id } = req.body;
+    
+    if (!goods_id || !name || !price || !category_id) {
+      return res.status(400).json({ code: 400, msg: '必填字段不能为空' });
+    }
+
+    const connection = await db.getConnection();
+    try {
+      // 开启事务
+      await connection.beginTransaction();
+
+      // 校验商品是否存在
+      const [[goods]] = await connection.query(
+        'SELECT 1 FROM goods WHERE goods_id = ?',
+        [goods_id]
+      );
+      if (!goods) {
+        await connection.rollback();
+        return res.status(404).json({ code: 404, msg: '商品不存在' });
+      }
+
+      // 更新商品数据
+      await connection.query(
+        `UPDATE goods 
+         SET name=?, price=?, description=?, image_url=?, 
+             street=?, detail_address=?, category_id=?
+         WHERE goods_id=?`,
+        [name, price, description, image_url, street, detail_address, category_id, goods_id]
+      );
+
+      await connection.commit();
+      res.json({ code: 200, msg: '更新成功' });
+    } catch (err) {
+      await connection.rollback();
+      throw err;
+    } finally {
+      connection.release();
+    }
+  } catch (err) {
+    console.error('更新商品失败:', err);
+    res.status(500).json({ code: 500, msg: '更新商品失败' });
+  }
+});
+
+
 
 module.exports = router;
