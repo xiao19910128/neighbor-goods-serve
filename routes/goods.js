@@ -233,43 +233,58 @@ router.delete('/delete/:id', async (req, res) => {
 // 获取当前用户发布的商品列表
 router.get('/published', async (req, res) => {
   try {
+    // 1. 接收分页参数
     const { userId, user_id, page = 1, size = 10 } = req.query;
     const finalUserId = userId || user_id;
-    const offset = (page - 1) * size;
-
+    
+    // 校验 userId
     if (!finalUserId) {
       return res.status(400).json({ code: 400, msg: 'userId 不能为空' });
     }
 
-    // ✅ 和发布商品接口一样：直接从 db 获取连接
+    // 2. 计算分页偏移量
+    const pageNum = parseInt(page);
+    const pageSize = parseInt(size);
+    const offset = (pageNum - 1) * pageSize;
+
     const connection = await db.getConnection();
     try {
-      // 1. 查询总数（直接用 connection.query，不需要包装）
+      // 3. 查询总数（用于分页计算）
       const [[countResult]] = await connection.query(
         'SELECT COUNT(*) AS total FROM goods WHERE user_id = ?',
         [finalUserId]
       );
       const total = countResult.total;
 
-      // 2. 查询列表（直接用 connection.query）
+      // 4. 查询当前页数据（分页 SQL）
       const [goodsList] = await connection.query(
-        `SELECT goods_id, name, price, image_url, street, detail_address, release_time, audit_status
+        `SELECT goods_id, name, price, description, image_url, 
+                street, detail_address, category_id, user_id, audit_status, release_time
          FROM goods 
          WHERE user_id = ? 
          ORDER BY release_time DESC 
          LIMIT ? OFFSET ?`,
-        [finalUserId, size, offset]
+        [finalUserId, pageSize, offset]
       );
+
+      // 5. 计算总页数
+      const totalPages = Math.ceil(total / pageSize);
 
       res.json({
         code: 200,
-        data: { list: goodsList, total }
+        data: {
+          list: goodsList,
+          pagination: {
+            page: pageNum,
+            size: pageSize,
+            total: total,
+            totalPages: totalPages
+          }
+        }
       });
     } finally {
-      // ✅ 确保连接一定释放
       connection.release();
     }
-
   } catch (err) {
     console.error('获取发布商品失败:', err);
     res.status(500).json({ code: 500, msg: '获取发布商品失败', error: err.message });
