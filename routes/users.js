@@ -11,7 +11,7 @@ const axios = require('axios'); // 用于调用微信接口
 router.post('/wxLogin', async (req, res) => {
   let connection;
   try {
-    const { code } = req.body;
+    const { code, nickName, avatarUrl } = req.body;
     if (!code) {
       return res.status(400).json({ code: 400, msg: 'code 不能为空' });
     }
@@ -55,8 +55,8 @@ router.post('/wxLogin', async (req, res) => {
       userInfo = user;
     } else {
       const [insertResult] = await connection.query(
-        'INSERT INTO users (openid, created_time, username, password, phone) VALUES (?, NOW(), ?, ?, ?)',
-        [openid, '微信用户', '', '']
+        'INSERT INTO users (openid, created_time, username, password, nick_name, avatar_url) VALUES (?, NOW(), ?, ?, ?, ?)',
+        [openid, nickName, '', nickName, avatarUrl] // 把昵称/头像存入数据库
       );
       userId = insertResult.insertId;
       userInfo = { user_id: userId, openid };
@@ -78,8 +78,8 @@ router.post('/wxLogin', async (req, res) => {
         userInfo: {
           user_id: userId,
           openid,
-          nickName: userInfo.nickName || '微信用户',
-          avatarUrl: userInfo.avatarUrl || '/static/default-avatar.png'
+          nick_name: userInfo.nickName,
+          avatar_url: userInfo.avatarUrl 
         }
       },
       msg: '登录成功'
