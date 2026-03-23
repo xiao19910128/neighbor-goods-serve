@@ -6,6 +6,91 @@ const bcrypt = require('bcrypt');
 const pool = require('../config/db');
 const jwt = require('jsonwebtoken'); // 用于生成 token
 const axios = require('axios'); // 用于调用微信接口
+const speakeasy = require('speakeasy');
+const redis = require('../config/redis.js');
+
+// 1. 获取验证码接口
+router.post('/getSmsCode', async (req, res) => {
+  try {
+    const { phone } = req.body;
+    // 校验手机号
+    const phoneReg = /^1[3-9]\d{9}$/;
+    if (!phoneReg.test(phone)) {
+      return res.status(400).json({ code: 400, msg: '手机号格式错误' });
+    }
+
+    // 生成 6 位验证码
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    // 存储到 Redis（5分钟过期）
+    await redis.set(`sms_code_${phone}`, code, 300);
+
+    // 毕设演示：打印验证码到控制台
+    console.log(`✅ 手机号 ${phone} 的验证码：${code}（5分钟有效）`);
+
+    res.json({ code: 200, msg: '验证码发送成功' });
+  } catch (err) {
+    console.error('获取验证码失败:', err);
+    res.status(500).json({ code: 500, msg: '获取验证码失败' });
+  }
+});
+
+// 2. 手机号+验证码登录接口
+router.post('/phoneLogin', async (req, res) => {
+  let connection;
+  try {
+    const { phone, smsCode } = req.body;
+    if (!phone || !smsCode) {
+      return res.status(400).json({ code: 400, msg: '手机号/验证码不能为空' });
+    }
+
+    // 从 Redis 获取验证码
+    const redisCode = await redis.get(`sms_code_${phone}`);
+    // 校验验证码
+    if (!redisCode || redisCode !== smsCode) {
+      return res.status(400).json({ code: 400, msg: '验证码错误/已过期' });
+    }
+
+    // 后续数据库操作、生成 Token 逻辑
+    connection = await pool.getConnection();
+    const [[user]] = await connection.query('SELECT * FROM users WHERE phone = ?', [phone]);
+
+    let userId, userInfo;
+    if (!user) {
+      // 补充 password 字段，传空字符串
+      const [insertResult] = await connection.query(
+        'INSERT INTO users (phone, created_time, username, password, openid) VALUES (?, NOW(), ?, ?, ?)',
+        [phone, `用户${phone.slice(-4)}`, '', '']
+      );
+      userId = insertResult.insertId;
+      userInfo = { user_id: userId, phone };
+    } else {
+      userId = user.user_id;
+      userInfo = user;
+    }
+
+    const token = jwt.sign({ userId, phone }, 'your-jwt-secret', { expiresIn: '7d' });
+    res.json({
+      code: 200,
+      data: {
+        token,
+        userInfo: {
+          user_id: userId,
+          phone,
+          nickName: userInfo.nickName || `用户${phone.slice(-4)}`,
+          avatarUrl: userInfo.avatarUrl || '/static/default-avatar.png'
+        }
+      },
+      msg: '登录成功'
+    });
+
+  } catch (err) {
+    console.error('手机号登录失败:', err);
+    res.status(500).json({ code: 500, msg: '登录失败' });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
 
 // 微信登录接口
 router.post('/wxLogin', async (req, res) => {
