@@ -3,6 +3,101 @@ const router = express.Router();
 const db = require('../config/db');
 // 引入bcrypt库，用于密码加密和解密。
 const bcrypt = require('bcrypt');
+const pool = require('../config/db');
+const jwt = require('jsonwebtoken'); // 用于生成 token
+const axios = require('axios'); // 用于调用微信接口
+
+// 微信登录接口
+router.post('/wxLogin', async (req, res) => {
+  let connection;
+  try {
+    const { code } = req.body;
+    if (!code) {
+      return res.status(400).json({ code: 400, msg: 'code 不能为空' });
+    }
+
+    // 1. 调用微信接口，用 code 换取 openid
+    const wxRes = await axios.get('https://api.weixin.qq.com/sns/jscode2session', {
+      params: {
+        appid: 'wxe8c3149805a71387',
+        secret: '18bbe69fc856db3c1fcddafb038d3ed9',
+        js_code: code,
+        grant_type: 'authorization_code'
+      }
+    });
+
+    const { openid } = wxRes.data;
+    if (!openid) {
+      return res.status(400).json({ code: 400, msg: '微信登录失败' });
+    }
+
+    // 2. 获取数据库连接
+    try {
+      connection = await pool.getConnection();
+      console.log('✅ 获取数据库连接成功');
+    } catch (connErr) {
+      console.error('❌ 获取数据库连接失败:', connErr);
+      return res.status(500).json({ code: 500, msg: '数据库连接失败' });
+    }
+
+    // 3. 查询用户
+    const [[user]] = await connection.query(
+      'SELECT * FROM users WHERE openid = ?',
+      [openid]
+    );
+
+    let userId;
+    let userInfo;
+
+    // 4. 判断用户是否存在，不存在则自动注册
+    if (user) {
+      userId = user.user_id;
+      userInfo = user;
+    } else {
+      const [insertResult] = await connection.query(
+        'INSERT INTO users (openid, created_time, username, password, phone) VALUES (?, NOW(), ?, ?, ?)',
+        [openid, '微信用户', '', '']
+      );
+      userId = insertResult.insertId;
+      userInfo = { user_id: userId, openid };
+    }
+
+    // 5. 生成 JWT Token
+    const jwt = require('jsonwebtoken');
+    const token = jwt.sign(
+      { userId, openid },
+      '你的JWT密钥',
+      { expiresIn: '7d' }
+    );
+
+    // 6. 返回结果
+    res.json({
+      code: 200,
+      data: {
+        token,
+        userInfo: {
+          user_id: userId,
+          openid,
+          nickName: userInfo.nickName || '微信用户',
+          avatarUrl: userInfo.avatarUrl || '/static/default-avatar.png'
+        }
+      },
+      msg: '登录成功'
+    });
+
+  } catch (err) {
+    console.error('微信登录失败:', err);
+    res.status(500).json({ code: 500, msg: '微信登录失败' });
+  } finally {
+    if (connection) {
+      try {
+        connection.release();
+      } catch (e) {
+        console.error('释放连接失败:', e);
+      }
+    }
+  }
+});
 
 // 获取用户列表
 router.get('/query', async (req, res) => {

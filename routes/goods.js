@@ -1,8 +1,6 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../config/db');
-const { pool } = require('../config/db');
-const util = require('util');
 // 获取商品列表
 router.get('/query', async (req, res) => {
   try {
