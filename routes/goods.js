@@ -358,7 +358,6 @@ router.post('/deletePublished', async (req, res) => {
   }
 });
 
-
 // 获取商品详情
 router.get('/detail', async (req, res) => {
   try {
@@ -442,6 +441,162 @@ router.post('/update', async (req, res) => {
   }
 });
 
+// 管理员-商品列表查询（全量+筛选+分页）
+router.get('/admin/list', async (req, res) => {
+  try {
+    // 1. 分页参数
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.max(1, parseInt(req.query.limit) || 10);
+    const offset = (page - 1) * limit;
 
+    // 2. 筛选参数（前端传参）
+    const { keyword = '', audit_status = '', publish_user = '' } = req.query;
+
+    // 3. 构建动态SQL（核心：多条件模糊+筛选）
+    let sql = `
+      SELECT g.*, u.username AS publish_user, c.name AS category_name 
+      FROM goods g 
+      LEFT JOIN users u ON g.user_id = u.user_id 
+      LEFT JOIN category c ON g.category_id = c.category_id 
+      WHERE 1=1
+    `;
+    const params = [];
+
+    // 商品名称/发布人 模糊搜索
+    if (keyword) {
+      sql += ` AND (g.name LIKE ? OR u.username LIKE ?)`;
+      params.push(`%${keyword}%`, `%${keyword}%`);
+    }
+
+    // 商品状态筛选
+    if (audit_status !== '' && audit_status !== null) {
+      sql += ` AND g.audit_status = ?`;
+      params.push(parseInt(audit_status));
+    }
+
+    // 4. 分页+排序
+    sql += ` ORDER BY g.release_time DESC LIMIT ? OFFSET ?`;
+    params.push(limit, offset);
+
+    // 5. 查询总数（用于分页）
+    let countSql = `SELECT COUNT(*) AS total FROM goods g LEFT JOIN users u ON g.user_id = u.user_id WHERE 1=1`;
+    const countParams = [];
+    if (keyword) {
+      countSql += ` AND (g.name LIKE ? OR u.username LIKE ?)`;
+      countParams.push(`%${keyword}%`, `%${keyword}%`);
+    }
+    if (audit_status !== '' && audit_status !== null) {
+      countSql += ` AND g.audit_status = ?`;
+      countParams.push(parseInt(audit_status));
+    }
+
+    // 6. 执行查询
+    const [totalRows] = await db.query(countSql, countParams);
+    const total = totalRows[0].total;
+    const [rows] = await db.query(sql, params);
+
+    // 7. 返回结果
+    res.json({
+      code: 200,
+      message: '查询成功',
+      data: {
+        list: rows,
+        total,
+        page,
+        limit,
+        pages: Math.ceil(total / limit)
+      }
+    });
+
+  } catch (err) {
+    console.error('商品列表查询错误:', err);
+    res.status(500).json({ code: 500, message: '服务器内部错误' });
+  }
+});
+
+// 管理员-商品操作（审核/上架/下架/删除 统一接口）
+router.post('/admin/operate', async (req, res) => {
+  try {
+    const { goods_id, action } = req.body;
+
+    // 1. 校验参数
+    if (!goods_id || !action) {
+      return res.status(400).json({ code: 400, message: '参数不完整' });
+    }
+
+    // 2. 先查询商品当前状态，校验操作合法性
+    const [goods] = await db.query(`SELECT * FROM goods WHERE goods_id = ?`, [goods_id]);
+    if (goods.length === 0) {
+      return res.status(404).json({ code: 404, message: '商品不存在' });
+    }
+    const currentStatus = goods[0].audit_status;
+
+    // 3. 执行对应操作
+    let updateSql = '';
+    let updateParams = [];
+    let successMsg = '';
+
+    switch (action) {
+      // 审核通过（上架）
+      case 'pass':
+        if (currentStatus !== 0) {
+          return res.status(400).json({ code: 400, message: '仅待审核商品可通过' });
+        }
+        updateSql = `UPDATE goods SET audit_status = 1 WHERE goods_id = ?`;
+        updateParams = [goods_id];
+        successMsg = '审核通过，商品已上架';
+        break;
+
+      // 审核拒绝
+      case 'reject':
+        if (currentStatus !== 0) {
+          return res.status(400).json({ code: 400, message: '仅待审核商品可拒绝' });
+        }
+        updateSql = `UPDATE goods SET audit_status = 2 WHERE goods_id = ?`;
+        updateParams = [goods_id];
+        successMsg = '审核拒绝';
+        break;
+
+      // 上架
+      case 'up':
+        if (currentStatus !== 3) {
+          return res.status(400).json({ code: 400, message: '仅下架商品可上架' });
+        }
+        updateSql = `UPDATE goods SET audit_status = 1 WHERE goods_id = ?`;
+        updateParams = [goods_id];
+        successMsg = '商品已上架';
+        break;
+
+      // 下架
+      case 'down':
+        if (currentStatus !== 1) {
+          return res.status(400).json({ code: 400, message: '仅上架商品可下架' });
+        }
+        updateSql = `UPDATE goods SET audit_status = 3 WHERE goods_id = ?`;
+        updateParams = [goods_id];
+        successMsg = '商品已下架';
+        break;
+
+      // 删除（仅已完成交易商品可删）
+      case 'delete':
+        if (currentStatus !== 4) {
+          return res.status(400).json({ code: 400, message: '仅已完成交易商品可删除' });
+        }
+        await db.query(`DELETE FROM goods WHERE goods_id = ?`, [goods_id]);
+        return res.json({ code: 200, message: '商品删除成功' });
+
+      default:
+        return res.status(400).json({ code: 400, message: '无效操作' });
+    }
+
+    // 4. 执行更新
+    await db.query(updateSql, updateParams);
+    res.json({ code: 200, message: successMsg });
+
+  } catch (err) {
+    console.error('商品操作错误:', err);
+    res.status(500).json({ code: 500, message: '服务器内部错误' });
+  }
+});
 
 module.exports = router;

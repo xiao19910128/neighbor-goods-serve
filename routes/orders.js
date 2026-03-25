@@ -73,10 +73,22 @@ router.get('/list', async (req, res) => {
 router.post('/updateStatus', async (req, res) => {
   try {
     const { order_id, status } = req.body;
+
+    // 1. 更新订单状态
     await pool.query('UPDATE orders SET status=? WHERE order_id=?', [status, order_id]);
-    res.json({ code: 200, msg: '更新成功' });
-  } catch (e) {
-    res.status(500).json({ code: 500 });
+
+    // 2. 核心：订单状态为4（已完成），自动将商品状态设为4（已完成，可删除）
+    if (status === 4) {
+      const [order] = await pool.query(`SELECT goods_id FROM orders WHERE order_id = ?`, [order_id]);
+      if (order.length > 0) {
+        await pool.query(`UPDATE goods SET audit_status = 4 WHERE goods_id = ?`, [order[0].goods_id]);
+      }
+    }
+
+    res.json({ code: 200, msg: '状态更新成功' });
+  } catch (err) {
+    console.error('订单状态更新错误:', err);
+    res.status(500).json({ code: 500, msg: '服务器错误' });
   }
 });
 
