@@ -87,18 +87,22 @@ router.get('/adminOrderList', async (req, res) => {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
     const offset = (page - 1) * limit;
-    // 查询总数（用于分页计算）
-    const [total] = await pool.query("SELECT COUNT(*) AS total FROM orders");
-    // 查询分页数据
+    // 查询总数
+    const [totalRows] = await pool.query(
+      "SELECT COUNT(*) AS total FROM orders"
+    );
+    const total = totalRows[0].total;
+
+    // 关联条件：o.user_id = buyer.user_id / o.seller_id = seller.user_id
     const [list] = await pool.query(`
       SELECT 
         o.*,
-        u.nick_name AS buyer_name,
-        s.nick_name AS seller_name,
+        buyer.username AS buyer_name,
+        seller.username AS seller_name,
         g.name, g.image_url, g.price
       FROM orders o
-      LEFT JOIN users u ON o.user_id = u.user_id
-      LEFT JOIN users s ON o.seller_id = s.user_id
+      LEFT JOIN users buyer ON o.user_id = buyer.user_id
+      LEFT JOIN users seller ON o.seller_id = seller.user_id
       LEFT JOIN goods g ON o.goods_id = g.goods_id
       ORDER BY o.order_id DESC
       LIMIT ? OFFSET ?
@@ -108,16 +112,16 @@ router.get('/adminOrderList', async (req, res) => {
       code: 200,
       data: {
         list: list,
-        total: total[0].total,  // 总条数
-        page: page,            // 当前页
-        limit: limit,          // 每页条数
-        pages: Math.ceil(total[0].total / limit) // 总页数
+        total: total,
+        page: page,
+        limit: limit,
+        pages: Math.ceil(total / limit)
       },
       msg: "获取成功"
     });
 
-  } catch (e) {
-    console.error("管理员订单分页接口报错:", e);
+  } catch (err) {
+    console.error("管理员订单接口报错:", err);
     res.status(500).json({ code: 500, msg: "服务器错误" });
   }
 });
