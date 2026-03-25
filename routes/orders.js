@@ -18,35 +18,27 @@ router.post('/create', async (req, res) => {
       return res.status(400).json({ code: 400, msg: '参数格式错误' });
     }
     // 3. 查询商品信息（获取卖家ID、价格、标题）
-    const [goods] = await pool.query(
-      'SELECT * FROM goods WHERE goods_id = ?',
-      [goodsId]
-    );
+    const [goods] = await pool.query('SELECT * FROM goods WHERE goods_id=?', [goods_id]);
     if (goods.length === 0) {
       return res.status(404).json({ code: 404, msg: '商品不存在' });
     }
     const goodsInfo = goods[0];
-    const orderNo = 'ORDER' + Date.now(); // 生成唯一订单号
-    // 4. 插入订单（完整字段，避免缺失）
+    const order_no = 'ORDER' + Date.now(); // 生成唯一订单号
+    // 4. 插入订单
     await pool.query(`
       INSERT INTO orders 
       (order_no, user_id, seller_id, goods_id, goods_title, goods_price, address_id, status) 
       VALUES (?, ?, ?, ?, ?, ?, ?, 1)
     `, [
-      orderNo,
-      userId,
-      goodsInfo.user_id, // 卖家ID
-      goodsId,
-      goodsInfo.title || goodsInfo.name, // 商品标题（兼容两种字段名）
-      goodsInfo.price, // 商品价格
-      addressId
+      order_no,
+      user_id,
+      goodsInfo.user_id,
+      goods_id,
+      goodsInfo.name,
+      goodsInfo.price,
+      address_id
     ]);
-    res.json({ 
-      code: 200, 
-      msg: '下单成功', 
-      order_no: orderNo 
-    });
-
+    res.json({ code: 200, msg: '下单成功', order_no });
   } catch (err) {
     res.status(500).json({ 
       code: 500, 
@@ -61,19 +53,19 @@ router.get('/list', async (req, res) => {
   try {
     const { user_id, type } = req.query;
     let sql = `
-      SELECT o.*, g.image_url, u.nick_name 
-      FROM orders o 
+      SELECT o.*, g.image_url, g.province, g.city, g.district, g.detail_address
+      FROM orders o
       LEFT JOIN goods g ON o.goods_id = g.goods_id
       LEFT JOIN users u ON o.user_id = u.user_id
     `;
     if (type === 'buy') sql += ` WHERE o.user_id = ${user_id}`;
     if (type === 'sell') sql += ` WHERE o.seller_id = ${user_id}`;
     sql += ' ORDER BY o.order_id DESC';
-    
+
     const [list] = await pool.query(sql);
-    res.json({ code:200, data:list });
+    res.json({ code: 200, data: list });
   } catch (e) {
-    res.status(500).json({});
+    res.status(500).json({ code: 500 });
   }
 });
 
@@ -82,26 +74,30 @@ router.post('/updateStatus', async (req, res) => {
   try {
     const { order_id, status } = req.body;
     await pool.query('UPDATE orders SET status=? WHERE order_id=?', [status, order_id]);
-    res.json({ code:200, msg:'状态更新成功' });
+    res.json({ code: 200, msg: '更新成功' });
   } catch (e) {
-    res.status(500).json({});
+    res.status(500).json({ code: 500 });
   }
 });
 
 // 管理员查询所有订单
-router.get('/adminList', async (req, res) => {
+router.get('/adminOrderList', async (req, res) => {
   try {
     const [list] = await pool.query(`
-      SELECT o.*, u.nick_name as buyer, s.nick_name as seller, g.title
+      SELECT 
+        o.*,
+        u.nick_name AS buyer_name,
+        s.nick_name AS seller_name,
+        g.name, g.image_url, g.price
       FROM orders o
       LEFT JOIN users u ON o.user_id = u.user_id
       LEFT JOIN users s ON o.seller_id = s.user_id
       LEFT JOIN goods g ON o.goods_id = g.goods_id
       ORDER BY o.order_id DESC
     `);
-    res.json({ code:200, data:list });
+    res.json({ code: 200, data: list });
   } catch (e) {
-    res.status(500).json({});
+    res.status(500).json({ code: 500 });
   }
 });
 
