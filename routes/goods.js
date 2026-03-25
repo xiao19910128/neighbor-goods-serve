@@ -141,23 +141,48 @@ router.post('/publish', async (req, res) => {
 // 管理端-获取待审核商品列表
 router.get('/pending-audit', async (req, res) => {
   try {
-    const [rows] = await db.execute(
-      `SELECT g.*, u.username AS publish_user, c.name AS category_name 
-       FROM goods g 
-       LEFT JOIN users u ON g.user_id = u.user_id 
-       LEFT JOIN category c ON g.category_id = c.category_id 
-       WHERE g.audit_status = 0 
-       ORDER BY g.release_time DESC`
-    );
+    // 1. 分页参数处理
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.max(1, parseInt(req.query.limit) || 10);
+    const offset = (page - 1) * limit;
 
+    // 2. 查询总条数
+    const [totalRows] = await db.query(
+      `SELECT COUNT(*) AS total FROM goods WHERE audit_status = 0`
+    );
+    const total = totalRows[0].total;
+
+    // 3. 同时用模板字符串直接拼接分页参数，避免占位符不匹配
+    const sql = `
+      SELECT g.*, u.username AS publish_user, c.name AS category_name 
+      FROM goods g 
+      LEFT JOIN users u ON g.user_id = u.user_id 
+      LEFT JOIN category c ON g.category_id = c.category_id 
+      WHERE g.audit_status = 0 
+      ORDER BY g.release_time DESC 
+      LIMIT ${limit} OFFSET ${offset}
+    `;
+    const [rows] = await db.query(sql);
+
+    // 4. 返回标准分页结构
     res.json({
       code: 200,
       message: '查询成功',
-      data: rows
+      data: {
+        list: rows,
+        total,
+        page,
+        limit,
+        pages: Math.ceil(total / limit)
+      }
     });
   } catch (err) {
     console.error('查询待审核商品错误:', err);
-    res.status(500).json({ code: 500, message: '服务器内部错误' });
+    res.status(500).json({ 
+      code: 500, 
+      message: '服务器内部错误',
+      error: err.message 
+    });
   }
 });
 

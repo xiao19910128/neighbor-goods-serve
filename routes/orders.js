@@ -83,6 +83,13 @@ router.post('/updateStatus', async (req, res) => {
 // 管理员查询所有订单
 router.get('/adminOrderList', async (req, res) => {
   try {
+    // 分页参数
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const offset = (page - 1) * limit;
+    // 查询总数（用于分页计算）
+    const [total] = await pool.query("SELECT COUNT(*) AS total FROM orders");
+    // 查询分页数据
     const [list] = await pool.query(`
       SELECT 
         o.*,
@@ -94,13 +101,25 @@ router.get('/adminOrderList', async (req, res) => {
       LEFT JOIN users s ON o.seller_id = s.user_id
       LEFT JOIN goods g ON o.goods_id = g.goods_id
       ORDER BY o.order_id DESC
-    `);
-    res.json({ code: 200, data: list });
+      LIMIT ? OFFSET ?
+    `, [limit, offset]);
+
+    res.json({
+      code: 200,
+      data: {
+        list: list,
+        total: total[0].total,  // 总条数
+        page: page,            // 当前页
+        limit: limit,          // 每页条数
+        pages: Math.ceil(total[0].total / limit) // 总页数
+      },
+      msg: "获取成功"
+    });
+
   } catch (e) {
-    res.status(500).json({ code: 500 });
+    console.error("管理员订单分页接口报错:", e);
+    res.status(500).json({ code: 500, msg: "服务器错误" });
   }
 });
-
-
 
 module.exports = router;
