@@ -71,24 +71,61 @@ router.get('/list', async (req, res) => {
 
 // 修改订单状态
 router.post('/updateStatus', async (req, res) => {
+  let connection;
   try {
-    const { order_id, status } = req.body;
+    const { order_id, status, user_id } = req.body;
 
-    // 1. 更新订单状态
-    await pool.query('UPDATE orders SET status=? WHERE order_id=?', [status, order_id]);
+    // 1. 必传参数校验
+    if (!order_id || !status || !user_id) {
+      return res.status(400).json({ code: 400, message: '参数不完整' });
+    }
 
-    // 2. 核心：订单状态为4（已完成），自动将商品状态设为4（已完成，可删除）
+    // 2. 获取数据库连接
+    connection = await pool.getConnection();
+
+    // 校验当前用户是否被禁用
+    const [userRows] = await connection.query(
+      'SELECT user_status FROM users WHERE user_id = ?',
+      [user_id]
+    );
+    if (userRows.length === 0) {
+      return res.status(404).json({ code: 404, message: '用户不存在' });
+    }
+
+    // 如果用户是禁用状态，直接拦截
+    if (userRows[0].user_status === 2) {
+      return res.status(403).json({
+        code: 403,
+        message: '账号已被禁用，无法操作订单'
+      });
+    }
+
+    // 3. 更新订单状态
+    await connection.query(
+      'UPDATE orders SET status=? WHERE order_id=?',
+      [status, order_id]
+    );
+
+    // 4. 订单完成 → 自动设置商品为已完成
     if (status === 4) {
-      const [order] = await pool.query(`SELECT goods_id FROM orders WHERE order_id = ?`, [order_id]);
-      if (order.length > 0) {
-        await pool.query(`UPDATE goods SET audit_status = 4 WHERE goods_id = ?`, [order[0].goods_id]);
+      const [orderResult] = await connection.query(
+        'SELECT goods_id FROM orders WHERE order_id = ?',
+        [order_id]
+      );
+      if (orderResult.length > 0) {
+        await connection.query(
+          'UPDATE goods SET audit_status = 4 WHERE goods_id = ?',
+          [orderResult[0].goods_id]
+        );
       }
     }
 
-    res.json({ code: 200, msg: '状态更新成功' });
+    res.json({ code: 200, message: '状态更新成功' });
   } catch (err) {
     console.error('订单状态更新错误:', err);
-    res.status(500).json({ code: 500, msg: '服务器错误' });
+    res.status(500).json({ code: 500, message: '服务器错误' });
+  } finally {
+    if (connection) connection.release();
   }
 });
 

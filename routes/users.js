@@ -13,32 +13,50 @@ const redis = require('../config/redis.js');
 router.post('/getSmsCode', async (req, res) => {
   try {
     const { phone } = req.body;
+    if (!phone) {
+      return res.status(400).json({ code: 400, message: '手机号不能为空' });
+    }
     // 校验手机号
     const phoneReg = /^1[3-9]\d{9}$/;
     if (!phoneReg.test(phone)) {
-      return res.status(400).json({ code: 400, msg: '手机号格式错误' });
+      return res.status(400).json({ code: 400, message: '手机号格式错误' });
     }
 
-    // 生成 6 位验证码
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    // 查询用户状态，拦截禁用用户（用 db.execute 确保参数正确）
+    const [user] = await db.execute(`SELECT user_status FROM users WHERE phone = ?`, [phone]);
+    // 处理用户不存在的情况（新用户可正常获取验证码注册）
+    if (user.length > 0 && user[0].user_status === 2) {
+      return res.status(403).json({ code: 403, message: '账号已被禁用，无法获取验证码' });
+    }
+    // 验证码生成
+    const code = Math.floor(Math.random() * 900000 + 100000).toString();
+    
     // 存储到 Redis（5分钟过期）
     await redis.set(`sms_code_${phone}`, code, 300);
 
-    // 毕设演示：打印验证码到控制台
-    console.log(`✅ 手机号 ${phone} 的验证码：${code}（5分钟有效）`);
+    // 调试日志
+    console.log(`手机号 ${phone} 的验证码：${code}（5分钟有效）`);
+    res.json({ code: 200, message: '验证码已发送', code });
 
-    res.json({ code: 200, msg: '验证码发送成功' });
   } catch (err) {
-    console.error('获取验证码失败:', err);
-    res.status(500).json({ code: 500, msg: '获取验证码失败' });
+    console.error('获取验证码错误:', err);
+    res.status(500).json({ code: 500, message: '服务器内部错误' });
   }
 });
 
-// 2. 手机号+验证码登录接口
+// 2. 手机号验证码登录（新增状态校验）
 router.post('/phoneLogin', async (req, res) => {
   let connection;
+  // 后续数据库操作、生成 Token 逻辑
+  connection = await pool.getConnection();
   try {
     const { phone, smsCode } = req.body;
+    // 查询用户
+    const [[user]] = await connection.query('SELECT * FROM users WHERE phone = ?', [phone]);
+    // 核心：禁用用户拦截
+    if (user?.user_status === 2) {
+      return res.status(403).json({ code: 403, message: '账号已被禁用，请联系管理员' });
+    }
     if (!phone || !smsCode) {
       return res.status(400).json({ code: 400, msg: '手机号/验证码不能为空' });
     }
@@ -49,10 +67,6 @@ router.post('/phoneLogin', async (req, res) => {
     if (!redisCode || redisCode !== smsCode) {
       return res.status(400).json({ code: 400, msg: '验证码错误/已过期' });
     }
-
-    // 后续数据库操作、生成 Token 逻辑
-    connection = await pool.getConnection();
-    const [[user]] = await connection.query('SELECT * FROM users WHERE phone = ?', [phone]);
 
     let userId, userInfo;
     if (!user) {
@@ -91,63 +105,68 @@ router.post('/phoneLogin', async (req, res) => {
   }
 });
 
-
-// 微信登录接口
+// 微信授权登录
 router.post('/wxLogin', async (req, res) => {
   let connection;
+  // 获取数据库连接
+  try {
+    connection = await pool.getConnection();
+    console.log('✅ 获取数据库连接成功');
+  } catch (connErr) {
+    console.error('❌ 获取数据库连接失败:', connErr);
+    return res.status(500).json({ code: 500, message: '数据库连接失败' });
+  }
   try {
     const { code, nickName, avatarUrl } = req.body;
-    if (!code) {
-      return res.status(400).json({ code: 400, msg: 'code 不能为空' });
+  // 调用微信接口，用 code 换取 openid（先拿 openid，再查用户）
+  const wxRes = await axios.get('https://api.weixin.qq.com/sns/jscode2session', {
+    params: {
+      appid: 'wxe8c3149805a71387',
+      secret: '18bbe69fc856db3c1fcddafb038d3ed9',
+      js_code: code,
+      grant_type: 'authorization_code'
     }
+  });
 
-    // 1. 调用微信接口，用 code 换取 openid
-    const wxRes = await axios.get('https://api.weixin.qq.com/sns/jscode2session', {
-      params: {
-        appid: 'wxe8c3149805a71387',
-        secret: '18bbe69fc856db3c1fcddafb038d3ed9',
-        js_code: code,
-        grant_type: 'authorization_code'
-      }
-    });
-
-    const { openid } = wxRes.data;
-    if (!openid) {
-      return res.status(400).json({ code: 400, msg: '微信登录失败' });
-    }
-
-    // 2. 获取数据库连接
-    try {
-      connection = await pool.getConnection();
-      console.log('✅ 获取数据库连接成功');
-    } catch (connErr) {
-      console.error('❌ 获取数据库连接失败:', connErr);
-      return res.status(500).json({ code: 500, msg: '数据库连接失败' });
-    }
-
-    // 3. 查询用户
+  const { openid } = wxRes.data;
+    // 查询/创建用户
     const [[user]] = await connection.query(
       'SELECT * FROM users WHERE openid = ?',
       [openid]
     );
 
+    // 禁用用户拦截
+    if (user?.user_status === 2) {
+      return res.status(403).json({ code: 403, message: '账号已被禁用，请联系管理员' });
+    }
+    if (!code) {
+      return res.status(400).json({ code: 400, message: 'code 不能为空' });
+    }
+    if (!openid) {
+      return res.status(400).json({ code: 400, message: '微信登录失败' });
+    }
+    // 禁用用户拦截（先查用户，再拦截）
+    if (user?.user_status === 2) {
+      return res.status(403).json({ code: 403, message: '账号已被禁用，请联系管理员' });
+    }
+
     let userId;
     let userInfo;
 
-    // 4. 判断用户是否存在，不存在则自动注册
+    // 判断用户是否存在，不存在则自动注册
     if (user) {
       userId = user.user_id;
       userInfo = user;
     } else {
       const [insertResult] = await connection.query(
-        'INSERT INTO users (openid, created_time, username, password, nick_name, avatar_url) VALUES (?, NOW(), ?, ?, ?, ?)',
-        [openid, nickName, '', nickName, avatarUrl] // 把昵称/头像存入数据库
+        'INSERT INTO users (openid, created_time, username, password, nick_name, avatar_url, user_status) VALUES (?, NOW(), ?, ?, ?, ?, 1)',
+        [openid, nickName, '', nickName, avatarUrl] // 新增 user_status=1（正常）
       );
       userId = insertResult.insertId;
       userInfo = { user_id: userId, openid };
     }
 
-    // 5. 生成 JWT Token
+    // 6. 生成 JWT Token
     const jwt = require('jsonwebtoken');
     const token = jwt.sign(
       { userId, openid },
@@ -155,7 +174,7 @@ router.post('/wxLogin', async (req, res) => {
       { expiresIn: '7d' }
     );
 
-    // 6. 返回结果
+    // 7. 返回结果
     res.json({
       code: 200,
       data: {
@@ -163,16 +182,16 @@ router.post('/wxLogin', async (req, res) => {
         userInfo: {
           user_id: userId,
           openid,
-          nick_name: userInfo.nickName,
-          avatar_url: userInfo.avatarUrl 
+          nick_name: userInfo.nick_name || nickName,
+          avatar_url: userInfo.avatar_url || avatarUrl 
         }
       },
-      msg: '登录成功'
+      message: '登录成功'
     });
 
   } catch (err) {
     console.error('微信登录失败:', err);
-    res.status(500).json({ code: 500, msg: '微信登录失败' });
+    res.status(500).json({ code: 500, message: '微信登录失败' });
   } finally {
     if (connection) {
       try {
@@ -184,30 +203,136 @@ router.post('/wxLogin', async (req, res) => {
   }
 });
 
-// 获取用户列表
+// 管理员-用户列表查询（带筛选+分页）
 router.get('/query', async (req, res) => {
   try {
-    console.log('=== 开始执行数据库查询 ===');
+    // 分页参数
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.max(1, parseInt(req.query.limit) || 10);
+    const offset = (page - 1) * limit;
+
+    // 筛选参数
+    const { keyword = '', user_status = '' } = req.query;
+
+    // 构建动态SQL
+    let sql = `SELECT * FROM users WHERE 1=1`;
+    const params = [];
+
+    // 模糊搜索（用户名/手机号/ID）
+    if (keyword) {
+      sql += ` AND (username LIKE ? OR phone LIKE ? OR user_id = ?)`;
+      params.push(`%${keyword}%`, `%${keyword}%`, isNaN(keyword) ? -1 : parseInt(keyword));
+    }
+
+    // 状态筛选
+    if (user_status !== '' && user_status !== null) {
+      sql += ` AND status = ?`;
+      params.push(parseInt(user_status));
+    }
+
+    // 分页+排序
+    sql += ` ORDER BY user_id DESC LIMIT ? OFFSET ?`;
+    params.push(limit, offset);
+
+    // 查询总数
+    let countSql = `SELECT COUNT(*) AS total FROM users WHERE 1=1`;
+    const countParams = [];
+    if (keyword) {
+      countSql += ` AND (username LIKE ? OR phone LIKE ? OR user_id = ?)`;
+      countParams.push(`%${keyword}%`, `%${keyword}%`, isNaN(keyword) ? -1 : parseInt(keyword));
+    }
+    if (user_status !== '' && user_status !== null) {
+      countSql += ` AND user_status = ?`;
+      countParams.push(parseInt(user_status));
+    }
+
     // 执行查询
-    const [rows] = await db.execute('SELECT * FROM users');
-    // 返回结果
-    res.status(200).json({
+    const [totalRows] = await db.query(countSql, countParams);
+    const total = totalRows[0].total;
+    const [rows] = await db.query(sql, params);
+
+    res.json({
       code: 200,
-      message: '获取用户列表成功',
-      data: rows
+      message: '查询成功',
+      data: {
+        list: rows,
+        total,
+        page,
+        limit,
+        pages: Math.ceil(total / limit)
+      }
     });
-  } catch (error) {
-    // 强制打印完整错误（重点！）
-    console.error('=== 数据库查询错误 ===');
-    console.error('错误类型：', error.name);
-    console.error('错误信息：', error.message);
-    console.error('错误堆栈：', error.stack);
-    // 返回友好提示
-    res.status(500).json({
-      code: 500,
-      message: '服务器内部错误',
-      error: error.message // 调试用，生产环境可删除
-    });
+
+  } catch (err) {
+    console.error('用户列表查询错误:', err);
+    res.status(500).json({ code: 500, message: '服务器内部错误' });
+  }
+});
+// 管理员-用户操作（禁用/启用/删除）
+router.post('/admin/operate', async (req, res) => {
+  try {
+    const { user_id, action } = req.body;
+
+    // 1. 校验参数
+    if (!user_id || !action) {
+      return res.status(400).json({ code: 400, message: '参数不完整' });
+    }
+
+    // 2. 核心修复：用 db.execute 替代 db.query，确保数据正确读取
+    const [user] = await db.execute(`SELECT * FROM users WHERE user_id = ?`, [user_id]);
+    if (user.length === 0) {
+      return res.status(404).json({ code: 404, message: '用户不存在' });
+    }
+    const currentStatus = user[0].user_status;
+    // 🔴 调试日志：打印当前状态，确认取值
+    console.log(`用户ID: ${user_id}, 当前状态: ${currentStatus}, 操作: ${action}`);
+
+    let updateSql = '';
+    let updateParams = [];
+    let successMsg = '';
+
+    switch (action) {
+      // 禁用（正常→禁用）
+      case 'disable':
+        // 核心修复：判断条件修正 + 日志
+        if (currentStatus !== 1) {
+          console.log(`拦截禁用：当前状态不是1，实际为${currentStatus}`);
+          return res.status(400).json({ code: 400, message: `仅正常用户可禁用，当前状态：${currentStatus}` });
+        }
+        updateSql = `UPDATE users SET user_status = 2 WHERE user_id = ?`;
+        updateParams = [user_id];
+        successMsg = '用户已禁用';
+        break;
+
+      // 启用（禁用→正常）
+      case 'enable':
+        if (currentStatus !== 2) {
+          return res.status(400).json({ code: 400, message: '仅禁用用户可启用' });
+        }
+        updateSql = `UPDATE users SET user_status = 1 WHERE user_id = ?`;
+        updateParams = [user_id];
+        successMsg = '用户已启用';
+        break;
+
+      // 删除（仅禁用用户可删）
+      case 'delete':
+        if (currentStatus !== 2) {
+          return res.status(400).json({ code: 400, message: '仅禁用用户可删除' });
+        }
+        await db.execute(`DELETE FROM users WHERE user_id = ?`, [user_id]);
+        return res.json({ code: 200, message: '用户删除成功' });
+
+      default:
+        return res.status(400).json({ code: 400, message: '无效操作' });
+    }
+
+    // 3. 核心修复：用 db.execute 执行更新，确保参数正确
+    await db.execute(updateSql, updateParams);
+    res.json({ code: 200, message: successMsg });
+
+  } catch (err) {
+    console.error('用户操作错误:', err);
+    res.status(500).json({ code: 500, message: '服务器内部错误', error: err.message });
   }
 });
 

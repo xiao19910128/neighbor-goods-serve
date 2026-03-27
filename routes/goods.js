@@ -82,6 +82,11 @@ router.post('/add', async (req, res) => {
 // 发布商品接口
 router.post('/publish', async (req, res) => {
     const { name, price, category_id, user_id, description='', image_url=''} = req.body;
+    // 查询用户状态
+    const [user] = await db.query(`SELECT user_status FROM users WHERE user_id = ?`, [user_id]);
+    if (user[0]?.user_status === 2) {
+      return res.status(403).json({ code: 403, message: '账号已被禁用，无法发布商品' });
+    }
     // 参数校验
     if (!name || !price || !category_id || !user_id) {
       return res.status(400).json({ code: 400, message: '必填字段不能为空' });
@@ -104,8 +109,6 @@ router.post('/publish', async (req, res) => {
       connection.release();
       return res.status(400).json({ code: -1, msg: '分类不存在', error: '分类不存在' });
     }
-
-
     // 插入商品，审核状态默认0（待审核）
     const [result] = await connection.execute(
       `INSERT INTO goods 
@@ -317,22 +320,24 @@ router.get('/published', async (req, res) => {
 // 删除商品接口
 router.post('/deletePublished', async (req, res) => {
   try {
-    const { goods_id } = req.body;
-
+    const { goods_id, user_id } = req.body;
     // 1. 参数校验
     if (!goods_id) {
       return res.status(400).json({ code: 400, msg: 'goods_id 不能为空' });
     }
-
-    // 2. 用连接池获取连接（和项目其他接口保持一致）
     const connection = await db.getConnection();
+    // 查询用户状态--禁用账号不可删除
+    const [user] = await connection.execute(`SELECT user_status FROM users WHERE user_id = ?`, [user_id]);
+    if (user[0]?.user_status === 2) {
+      return res.status(403).json({ code: 403, message: '账号已被禁用，无法删除商品' });
+    }
+    // 2. 用连接池获取连接（和项目其他接口保持一致）
     try {
       // 3. 执行删除
       const [result] = await connection.execute(
         'DELETE FROM goods WHERE goods_id = ?',
         [goods_id]
       );
-
       // 4. 判断是否真的删除了数据
       if (result.affectedRows === 0) {
         return res.status(404).json({ code: 404, msg: '商品不存在或已删除' });
@@ -397,10 +402,15 @@ router.get('/detail', async (req, res) => {
 router.post('/update', async (req, res) => {
   try {
     const { goods_id, name, price, description, image_url, 
-            street, detail_address, category_id } = req.body;
+            street, detail_address, category_id, user_id } = req.body;
     
     if (!goods_id || !name || !price || !category_id) {
       return res.status(400).json({ code: 400, msg: '必填字段不能为空' });
+    }
+    // 查询用户状态--禁用账号不可更新
+    const [user] = await db.execute(`SELECT user_status FROM users WHERE user_id = ?`, [user_id]);
+    if (user[0]?.user_status === 2) {
+      return res.status(403).json({ code: 403, message: '账号已被禁用，无法更新商品信息' });
     }
 
     const connection = await db.getConnection();
