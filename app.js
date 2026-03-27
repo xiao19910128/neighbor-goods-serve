@@ -1,6 +1,7 @@
 const express = require('express');
 const app = express();
-const port = 3000;
+const path = require('path');
+const port = process.env.PORT || 3000;
 
 const goodsRouter = require('./routes/goods');
 const usersRouter = require('./routes/users');
@@ -14,6 +15,9 @@ const messageRouter = require('./routes/message');
 const ordersRouter = require('./routes/orders');
 // 解析 JSON 请求体
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+// 配置静态资源访问（让上传的图片可以直接访问）
+app.use('/uploads', express.static(path.join(__dirname, 'public/uploads')));
 
 app.use('/api/goods', goodsRouter);
 app.use('/api/users', usersRouter);
@@ -31,6 +35,7 @@ app.get('/api/hello', (req, res) => {
   res.send('Hello from backend!');
 });
 
+// 启动服务
 app.listen(port, () => {
   console.log(`Server running on http://localhost:${port}`);
 });
