@@ -5,6 +5,18 @@ const pool = require('../config/db');
 router.post('/toggle', async (req, res) => {
   try {
     const { user_id, goods_id } = req.body;
+    // 校验当前用户是否被禁用
+    const [userRows] = await pool.query(
+      'SELECT user_status FROM users WHERE user_id = ?',
+      [user_id]
+    );
+    // 如果用户是禁用状态，直接拦截
+    if (userRows[0].user_status === 2) {
+      return res.status(403).json({
+        code: 403,
+        message: '账号已被禁用，无法创建订单'
+      });
+    }
     const [exists] = await pool.query('SELECT * FROM collections WHERE user_id=? AND goods_id=?', [user_id, goods_id]);
     if (exists.length) {
       await pool.query('DELETE FROM collections WHERE user_id=? AND goods_id=?', [user_id, goods_id]);

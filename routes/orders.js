@@ -17,6 +17,18 @@ router.post('/create', async (req, res) => {
     if (isNaN(userId) || isNaN(goodsId) || isNaN(addressId)) {
       return res.status(400).json({ code: 400, msg: '参数格式错误' });
     }
+    // 校验当前用户是否被禁用
+    const [userRows] = await pool.query(
+      'SELECT user_status FROM users WHERE user_id = ?',
+      [user_id]
+    );
+    // 如果用户是禁用状态，直接拦截
+    if (userRows[0].user_status === 2) {
+      return res.status(403).json({
+        code: 403,
+        message: '账号已被禁用，无法创建订单'
+      });
+    }
     // 3. 查询商品信息（获取卖家ID、价格、标题）
     const [goods] = await pool.query('SELECT * FROM goods WHERE goods_id=?', [goods_id]);
     if (goods.length === 0) {
@@ -74,15 +86,12 @@ router.post('/updateStatus', async (req, res) => {
   let connection;
   try {
     const { order_id, status, user_id } = req.body;
-
     // 1. 必传参数校验
     if (!order_id || !status || !user_id) {
       return res.status(400).json({ code: 400, message: '参数不完整' });
     }
-
     // 2. 获取数据库连接
     connection = await pool.getConnection();
-
     // 校验当前用户是否被禁用
     const [userRows] = await connection.query(
       'SELECT user_status FROM users WHERE user_id = ?',
@@ -91,7 +100,6 @@ router.post('/updateStatus', async (req, res) => {
     if (userRows.length === 0) {
       return res.status(404).json({ code: 404, message: '用户不存在' });
     }
-
     // 如果用户是禁用状态，直接拦截
     if (userRows[0].user_status === 2) {
       return res.status(403).json({
@@ -99,13 +107,11 @@ router.post('/updateStatus', async (req, res) => {
         message: '账号已被禁用，无法操作订单'
       });
     }
-
     // 3. 更新订单状态
     await connection.query(
       'UPDATE orders SET status=? WHERE order_id=?',
       [status, order_id]
     );
-
     // 4. 订单完成 → 自动设置商品为已完成
     if (status === 4) {
       const [orderResult] = await connection.query(
@@ -119,7 +125,6 @@ router.post('/updateStatus', async (req, res) => {
         );
       }
     }
-
     res.json({ code: 200, message: '状态更新成功' });
   } catch (err) {
     console.error('订单状态更新错误:', err);
