@@ -461,4 +461,38 @@ router.delete('/delete/:id', async (req, res) => {
   }
 })
 
+// 获取用户信息（提供默认头像）
+router.post('/info', async (req, res) => {
+  try {
+    const { user_id } = req.body;
+
+    if (!user_id) {
+      return res.status(400).json({ code: 400, message: '参数错误' });
+    }
+
+    // 查询用户
+    const [rows] = await db.query(
+      'SELECT user_id, nick_name, username FROM users WHERE user_id = ?',
+      [user_id]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ code: 404, message: '用户不存在' });
+    }
+
+    const user = rows[0];
+
+    // 虚拟头像！！！
+    user.avatar_url = 'https://picsum.photos/id/1005/100/100';
+
+    res.json({
+      code: 200,
+      data: user
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ code: 500, message: '服务器错误' });
+  }
+});
+
 module.exports = router;

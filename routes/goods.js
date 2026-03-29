@@ -13,9 +13,9 @@ router.get('/query', async (req, res) => {
       FROM goods g
       LEFT JOIN users u ON g.user_id = u.user_id
       LEFT JOIN category c ON g.category_id = c.category_id
-      WHERE g.audit_status = 1
+      WHERE g.audit_status = 1 AND g.status = 1
     `;
-    // WHERE g.audit_status = 1 AND g.status = 1 // 待确认是否需要上架状态，上架状态为1，下架状态为0
+     // 展示已审批通过且没有被锁单的商品 status 1=正常展示 2=已被下单锁定 0=已删除
     const params = [];
     // 如果传了 name 参数，添加模糊查询条件
     if (name && name.trim() !== '') {

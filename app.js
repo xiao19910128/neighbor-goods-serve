@@ -30,6 +30,23 @@ app.use('/api/address', addressRouter);
 app.use('/api/message', messageRouter);
 app.use('/api/orders', ordersRouter);
 
+//  定时任务：每天清理 30 天前已读的消息
+const cleanExpiredMessages = async () => {
+  try {
+    await db.query(`
+      DELETE FROM messages 
+      WHERE created_at < DATE_SUB(NOW(), INTERVAL 30 DAY) 
+      AND is_read = 1
+    `);
+    console.log('✅ 已清理30天前已读消息');
+  } catch (err) {
+    console.error('❌ 清理消息失败', err);
+  }
+};
+
+// 每天执行一次 86400000 毫秒 = 24小时
+setInterval(cleanExpiredMessages, 86400000);
+
 // 测试接口
 app.get('/api/hello', (req, res) => {
   res.send('Hello from backend!');

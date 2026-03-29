@@ -36,6 +36,7 @@ router.post('/create', async (req, res) => {
     }
     const goodsInfo = goods[0];
     const order_no = 'ORDER' + Date.now(); // 生成唯一订单号
+    await pool.execute('UPDATE goods SET status=2 WHERE goods_id=?', [goods_id]);  // 锁定商品，防止重复下单
     // 4. 插入订单
     await pool.query(`
       INSERT INTO orders 
@@ -81,7 +82,7 @@ router.get('/list', async (req, res) => {
   }
 });
 
-// 修改订单状态
+// 修改订单状态（退单释放商品 + 卖家完成订单 + 商品状态自动管理）
 router.post('/updateStatus', async (req, res) => {
   let connection;
   try {
@@ -100,19 +101,33 @@ router.post('/updateStatus', async (req, res) => {
     if (userRows.length === 0) {
       return res.status(404).json({ code: 404, message: '用户不存在' });
     }
-    // 如果用户是禁用状态，直接拦截
     if (userRows[0].user_status === 2) {
       return res.status(403).json({
         code: 403,
         message: '账号已被禁用，无法操作订单'
       });
     }
-    // 3. 更新订单状态
-    await connection.query(
-      'UPDATE orders SET status=? WHERE order_id=?',
-      [status, order_id]
-    );
-    // 4. 订单完成 → 自动设置商品为已完成
+
+    // 根据不同状态自动处理商品锁定/释放
+    // 如果是【退单 / 取消订单】status = 5
+    // → 商品恢复上架 status = 1
+    if (status === 5) {
+      const [orderRows] = await connection.query(
+        'SELECT goods_id FROM orders WHERE order_id = ?',
+        [order_id]
+      );
+      if (orderRows.length > 0) {
+        const goods_id = orderRows[0].goods_id;
+        // 退单 → 商品释放，重新显示
+        await connection.query(
+          'UPDATE goods SET status = 1 WHERE goods_id = ?',
+          [goods_id]
+        );
+      }
+    }
+
+    // 如果是【卖家确认完成】status = 4
+    // → 商品保持锁定
     if (status === 4) {
       const [orderResult] = await connection.query(
         'SELECT goods_id FROM orders WHERE order_id = ?',
@@ -125,6 +140,13 @@ router.post('/updateStatus', async (req, res) => {
         );
       }
     }
+
+    // 统一更新订单状态
+    await connection.query(
+      'UPDATE orders SET status = ? WHERE order_id = ?',
+      [status, order_id]
+    );
+
     res.json({ code: 200, message: '状态更新成功' });
   } catch (err) {
     console.error('订单状态更新错误:', err);
@@ -177,6 +199,64 @@ router.get('/adminOrderList', async (req, res) => {
   } catch (err) {
     console.error("管理员订单接口报错:", err);
     res.status(500).json({ code: 500, msg: "服务器错误" });
+  }
+});
+
+// 订单详情接口
+router.post('/detail', async (req, res) => {
+  try {
+    const { order_id, user_id } = req.body;
+    if (!order_id || !user_id) {
+      return res.status(400).json({ code: 400, message: '参数错误' });
+    }
+
+    // 用户禁用拦截
+    const [userRows] = await db.execute('SELECT user_status FROM users WHERE user_id = ?', [user_id]);
+    if (userRows.length === 0 || userRows[0].user_status === 2) {
+      return res.status(403).json({ code: 403, message: '账号异常，无法查看订单' });
+    }
+
+    // 查询订单详情（关联商品、买家/卖家信息）
+    const [orderRows] = await db.execute(`
+      SELECT o.*, g.name, g.image_url, g.price,
+             b.nick_name AS buyer_nickname, b.phone AS buyer_phone,
+             s.nick_name AS seller_nickname, s.phone AS seller_phone
+      FROM orders o
+      LEFT JOIN goods g ON o.goods_id = g.goods_id
+      LEFT JOIN users b ON o.buyer_id = b.user_id
+      LEFT JOIN users s ON o.seller_id = s.user_id
+      WHERE o.order_id = ?
+    `, [order_id]);
+
+    if (orderRows.length === 0) {
+      return res.status(404).json({ code: 404, message: '订单不存在' });
+    }
+
+    const order = orderRows[0];
+    // 判断当前用户是买家还是卖家，返回对方信息
+    const isBuyer = order.buyer_id === user_id;
+    const oppositeInfo = isBuyer ? {
+      user_id: order.seller_id,
+      nickname: order.seller_nickname,
+      phone: order.seller_phone
+    } : {
+      user_id: order.buyer_id,
+      nickname: order.buyer_nickname,
+      phone: order.buyer_phone
+    };
+
+    res.json({
+      code: 200,
+      data: {
+        ...order,
+        opposite_user_id: oppositeInfo.user_id,
+        opposite_nickname: oppositeInfo.nickname,
+        opposite_phone: oppositeInfo.phone
+      }
+    });
+  } catch (err) {
+    console.error('获取订单详情失败:', err);
+    res.status(500).json({ code: 500, message: '服务器错误' });
   }
 });
 
