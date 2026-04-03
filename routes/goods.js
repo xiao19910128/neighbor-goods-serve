@@ -22,7 +22,7 @@ router.get('/query', async (req, res) => {
       sql += ' AND g.name LIKE ?';
       params.push(`%${name.trim()}%`);
     }
-    // 最后加上排序
+    // 排序
     sql += ' ORDER BY g.release_time DESC';
     // 3. 执行查询
     const [rows] = await db.execute(sql, params);
