@@ -81,17 +81,19 @@ router.post('/add', async (req, res) => {
 
 // 发布商品接口
 router.post('/publish', async (req, res) => {
-    const { name, price, category_id, user_id, description='', image_url=''} = req.body;
-    // 查询用户状态
-    const [user] = await db.query(`SELECT user_status FROM users WHERE user_id = ?`, [user_id]);
-    if (user[0]?.user_status === 2) {
-      return res.status(403).json({ code: 403, message: '账号已被禁用，无法发布商品' });
-    }
-    // 参数校验
-    if (!name || !price || !category_id || !user_id) {
-      return res.status(400).json({ code: 400, message: '必填字段不能为空' });
-    }
-
+  const { name, price, category_id, user_id, description='', image_url='', address_id, detail_address} = req.body;
+  // 查询用户状态
+  const [user] = await db.query(`SELECT user_status FROM users WHERE user_id = ?`, [user_id]);
+  if (user[0]?.user_status === 2) {
+    return res.status(403).json({ code: 403, message: '账号已被禁用，无法发布商品' });
+  }
+  // 参数校验
+  if (!name || !price || !category_id || !user_id) {
+    return res.status(400).json({ code: 400, message: '必填字段不能为空' });
+  }
+  if (!address_id && !detail_address) {
+    return res.json({ code: 400, msg: '请选择或填写自提地址' });
+  }
   const connection = await db.getConnection();
   try {    
     await connection.beginTransaction();
@@ -113,8 +115,8 @@ router.post('/publish', async (req, res) => {
     const [result] = await connection.execute(
       `INSERT INTO goods 
       (name, price, description, image_url, category_id, user_id, audit_status, 
-        province, city, district, street, detail_address)
-      VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
+        province, city, district, street, detail_address, address_id)
+      VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)`,
       [
         name, price, description, image_url, category_id, user_id,
         // 新增地址字段，从 req.body 取
@@ -122,7 +124,8 @@ router.post('/publish', async (req, res) => {
         req.body.city || '上海市',       // 默认上海市
         req.body.district || '闵行区',   // 默认闵行区
         req.body.street || '梅陇镇',     // 默认梅陇镇（你的核心社区）
-        req.body.detail_address || ''    // 详细地址可为空
+        req.body.detail_address || '',    // 详细地址可为空
+        address_id,
       ]
     );
 

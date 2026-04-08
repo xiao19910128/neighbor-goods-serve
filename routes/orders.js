@@ -5,16 +5,15 @@ const pool = require('../config/db');
 // 创建订单
 router.post('/create', async (req, res) => {
   try {
-    const { user_id, goods_id, address_id } = req.body;
+    const { user_id, goods_id } = req.body;
     // 1. 参数校验（关键防御）
-    if (!user_id || !goods_id || !address_id) {
+    if (!user_id || !goods_id) {
       return res.status(400).json({ code: 400, msg: '参数不完整' });
     }
     // 2. 统一转为数字，避免类型不匹配
     const userId = parseInt(user_id);
     const goodsId = parseInt(goods_id);
-    const addressId = parseInt(address_id);
-    if (isNaN(userId) || isNaN(goodsId) || isNaN(addressId)) {
+    if (isNaN(userId) || isNaN(goodsId)) {
       return res.status(400).json({ code: 400, msg: '参数格式错误' });
     }
     // 校验当前用户是否被禁用
@@ -49,7 +48,7 @@ router.post('/create', async (req, res) => {
       goods_id,
       goodsInfo.name,
       goodsInfo.price,
-      address_id
+      goodsInfo.address_id || null, // 默认地址ID，如果未提供则为null
     ]);
     res.json({ code: 200, msg: '下单成功', order_no });
   } catch (err) {
