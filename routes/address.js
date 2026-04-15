@@ -22,7 +22,7 @@ router.get('/list', async (req, res) => {
 // 2. 新增地址
 router.post('/add', async (req, res) => {
   try {
-    const { user_id, name, phone, province, city, county, detail, is_default } = req.body;
+    const { user_id, contact_name, contact_phone, province, city, district, street, detail_address, is_default } = req.body;
     // 强制转为数字，确保一致性
     const userId = parseInt(user_id);
     if (is_default == 1) {
@@ -30,8 +30,8 @@ router.post('/add', async (req, res) => {
     }
 
     const [result] = await pool.query(
-      'INSERT INTO address (user_id, name, phone, province, city, county, detail, is_default) VALUES (?,?,?,?,?,?,?,?)',
-      [userId, name, phone, province || '上海市', city || '上海市', county || '闵行区', detail, is_default || 0]
+      'INSERT INTO address (user_id, contact_name, contact_phone, province, city, district, street, detail_address, is_default) VALUES (?,?,?,?,?,?,?,?,?)',
+      [userId, contact_name, contact_phone, province || '上海市', city || '上海市', district || '闵行区', street || '梅陇镇', detail_address, is_default || 0]
     );
 
     res.json({ code: 200, msg: '添加成功', address_id: result.insertId });
@@ -42,10 +42,10 @@ router.post('/add', async (req, res) => {
 // 3. 修改地址
 router.post('/update', async (req, res) => {
   try {
-    const { address_id, user_id, name, phone, province, city, county, detail, is_default } = req.body;
+    const { address_id, user_id, contact_name, contact_phone, province, city, district, street, detail_address, is_default } = req.body;
     const userId = parseInt(user_id);
     // 校验必填项
-    if (!address_id || !name || !phone || !detail) {
+    if (!address_id || !contact_name || !contact_phone || !detail_address) {
       return res.status(400).json({ code: 400, msg: '信息不完整' });
     }
     // 如果设为默认，先取消其他默认
@@ -54,8 +54,8 @@ router.post('/update', async (req, res) => {
     }
 
     const [result] = await pool.query(
-      'UPDATE address SET name=?, phone=?, province=?, city=?, county=?, detail=?, is_default=? WHERE address_id=? AND user_id=?',
-      [name, phone, province, city, county, detail, is_default, address_id, userId]
+      'UPDATE address SET contact_name=?, contact_phone=?, province=?, city=?, district=?, street=?, detail_address=?, is_default=? WHERE address_id=? AND user_id=?',
+      [contact_name, contact_phone, province, city, district, street, detail_address, is_default, address_id, userId]
     );
 
     res.json({ code: 200, msg: '修改成功' });

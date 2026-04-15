@@ -50,6 +50,29 @@ router.post('/create', async (req, res) => {
       goodsInfo.price,
       goodsInfo.address_id || null, // 默认地址ID，如果未提供则为null
     ]);
+
+    await connection.query(
+      `INSERT INTO orders (
+        goods_id,
+        user_id,
+        seller_id,
+        address_id,
+        contact_name,
+        contact_phone,
+        order_status,
+        create_time
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())`,
+      [
+        goods_id,
+        user_id, // 买家ID
+        seller_id, // 卖家ID（商品的publisher_id）
+        address_id || null, // 关联的地址ID，空则传NULL
+        contact_name || '',
+        contact_phone || '',
+        0 // 订单状态：待付款
+      ]
+    );
+
     res.json({ code: 200, msg: '下单成功', order_no });
   } catch (err) {
     res.status(500).json({ 

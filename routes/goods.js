@@ -81,66 +81,157 @@ router.post('/add', async (req, res) => {
 
 // 发布商品接口
 router.post('/publish', async (req, res) => {
-  const { name, price, category_id, user_id, description='', image_url='', address_id, detail_address} = req.body;
-  // 查询用户状态
-  const [user] = await db.query(`SELECT user_status FROM users WHERE user_id = ?`, [user_id]);
-  if (user[0]?.user_status === 2) {
-    return res.status(403).json({ code: 403, message: '账号已被禁用，无法发布商品' });
-  }
-  // 参数校验
-  if (!name || !price || !category_id || !user_id) {
-    return res.status(400).json({ code: 400, message: '必填字段不能为空' });
-  }
-  if (!address_id && !detail_address) {
-    return res.json({ code: 400, msg: '请选择或填写自提地址' });
-  }
-  const connection = await db.getConnection();
-  try {    
+  let connection;
+  try {
+    // 1. 获取连接并开启事务
+    connection = await db.getConnection();
     await connection.beginTransaction();
-    const [[user]] = await connection.query('SELECT 1 FROM users WHERE user_id = ? LIMIT 1', [user_id]);
+
+    // 2. 解构所有前端参数
+    const {
+      name,
+      price,
+      category_id,
+      user_id,
+      description = '',
+      image_url = '',
+      address_id = 0,
+      detail_address,
+      province,
+      city,
+      district,
+      street,
+      contact_name,
+      contact_phone,
+      publisher_name, publisher_id
+    } = req.body;
+
+    // 3. 参数基础校验
+    if (!name || !price || !category_id || !publisher_id) {
+      await connection.rollback();
+      connection.release();
+      return res.status(400).json({ code: -1, msg: '必填字段不能为空' });
+    }
+
+    // 4. 校验用户是否存在 & 账号状态
+    const [[user]] = await connection.query(
+      'SELECT user_status FROM users WHERE user_id = ? LIMIT 1',
+      [user_id]
+    );
     if (!user) {
       await connection.rollback();
       connection.release();
       return res.status(400).json({ code: -1, msg: '用户不存在' });
     }
+    if (user.user_status === 2) {
+      await connection.rollback();
+      connection.release();
+      return res.status(403).json({ code: -1, msg: '账号已被禁用，无法发布商品' });
+    }
 
-    // 校验分类是否存在
-    const [[category]] = await connection.query('SELECT 1 FROM category WHERE category_id = ? LIMIT 1', [category_id]);
+    // 5. 校验分类是否存在
+    const [[category]] = await connection.query(
+      'SELECT 1 FROM category WHERE category_id = ? LIMIT 1',
+      [category_id]
+    );
     if (!category) {
       await connection.rollback();
       connection.release();
-      return res.status(400).json({ code: -1, msg: '分类不存在', error: '分类不存在' });
+      return res.status(400).json({ code: -1, msg: '分类不存在' });
     }
-    // 插入商品，审核状态默认0（待审核）
-    const [result] = await connection.execute(
-      `INSERT INTO goods 
-      (name, price, description, image_url, category_id, user_id, audit_status, 
-        province, city, district, street, detail_address, address_id)
-      VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)`,
+
+    // 6. 处理自提地址逻辑
+    let finalAddressId = 0;
+    if (address_id && address_id !== 0) {
+      // 情况1：用户选了已有地址，校验归属
+      const [[addr]] = await connection.query(
+        'SELECT address_id FROM address WHERE address_id = ? AND user_id = ? LIMIT 1',
+        [address_id, user_id]
+      );
+      if (!addr) {
+        await connection.rollback();
+        connection.release();
+        return res.status(400).json({ code: -1, msg: '选择的地址不存在' });
+      }
+      finalAddressId = address_id;
+    } else {
+      // 情况2：用户填了新地址，自动保存到地址库
+      if (!contact_name || !contact_phone) {
+        await connection.rollback();
+        connection.release();
+        return res.status(400).json({ code: -1, msg: '自提联系人或电话不能为空' });
+      }
+      const [addrResult] = await connection.query(
+        `INSERT INTO address (
+          user_id,
+          contact_name,
+          contact_phone,
+          province,
+          city,
+          district,
+          street,
+          detail_address
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          user_id,
+          contact_name || '',
+          contact_phone || '',
+          province || '上海市',
+          city || '上海市',
+          district || '闵行区',
+          street || '梅陇镇',
+          detail_address || ''
+        ]
+      );
+      finalAddressId = addrResult.insertId;
+    }
+
+    // 7. 插入商品表
+    const [goodsResult] = await connection.execute(
+      `INSERT INTO goods (
+        name, price, description, image_url,
+        category_id, user_id, audit_status,
+        province, city, district, street, detail_address,
+        address_id, contact_name, contact_phone,
+        publisher_name, publisher_id
+      ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        name, price, description, image_url, category_id, user_id,
-        // 新增地址字段，从 req.body 取
-        req.body.province || '上海市',   // 默认上海市
-        req.body.city || '上海市',       // 默认上海市
-        req.body.district || '闵行区',   // 默认闵行区
-        req.body.street || '梅陇镇',     // 默认梅陇镇（你的核心社区）
-        req.body.detail_address || '',    // 详细地址可为空
-        address_id,
+        name || '',
+        price || 0,
+        description || '',
+        image_url || '',
+        category_id || 0,
+        user_id,
+        province || '上海市',
+        city || '上海市',
+        district || '闵行区',
+        street || '梅陇镇',
+        detail_address || '',
+        finalAddressId,
+        contact_name || '',
+        contact_phone || '',
+        publisher_name || '匿名卖家',
+        publisher_id || user_id
       ]
     );
 
+    // 8. 提交事务
     await connection.commit();
     connection.release();
-    res.json({
+    return res.json({
       code: 200,
       msg: '发布成功，请等待管理员审核',
-      data: { goodsId: result.insertId }
+      data: { goodsId: goodsResult.insertId }
     });
+
   } catch (err) {
-    await connection.rollback();
-    connection.release();
+    // 异常回滚
+    if (connection) {
+      await connection.rollback();
+      connection.release();
+    }
     console.error('发布商品失败:', err);
-    res.status(500).json({ code: -1, msg: '发布失败', error: err.message });
+    return res.status(500).json({ code: -1, msg: '发布失败', error: err.message });
   }
 });
 
@@ -378,7 +469,8 @@ router.get('/detail', async (req, res) => {
     try {
       const [[goods]] = await connection.query(
         `SELECT goods_id, name, price, description, image_url, 
-                street, detail_address, category_id, user_id, audit_status
+          street, detail_address, category_id, user_id, audit_status,
+          publisher_name, publisher_id
          FROM goods 
          WHERE goods_id = ?`,
         [goods_id]
@@ -404,53 +496,85 @@ router.get('/detail', async (req, res) => {
 // 更新商品信息
 router.post('/update', async (req, res) => {
   try {
-    const { goods_id, name, price, description, image_url, 
-            street, detail_address, category_id, user_id } = req.body;
-    
+    const {
+      goods_id,
+      name,
+      price,
+      description,
+      image_url,
+      street,
+      detail_address,
+      category_id,
+      user_id,
+      address_id,
+      contact_name,
+      contact_phone
+    } = req.body;
+
     if (!goods_id || !name || !price || !category_id) {
       return res.status(400).json({ code: 400, msg: '必填字段不能为空' });
     }
     // 查询用户状态--禁用账号不可更新
-    const [user] = await db.execute(`SELECT user_status FROM users WHERE user_id = ?`, [user_id]);
+    const [user] = await db.execute('SELECT user_status FROM users WHERE user_id = ?', [user_id]);
     if (user[0]?.user_status === 2) {
-      return res.status(403).json({ code: 403, message: '账号已被禁用，无法更新商品信息' });
+      return res.status(403).json({ code: 403, message: '账号已禁用' });
     }
 
     const connection = await db.getConnection();
-    try {
-      // 开启事务
-      await connection.beginTransaction();
+    await connection.beginTransaction();
 
-      // 校验商品是否存在
+    try {
+      // 检查商品是否存在
       const [[goods]] = await connection.query(
-        'SELECT 1 FROM goods WHERE goods_id = ?',
+        'SELECT * FROM goods WHERE goods_id = ?',
         [goods_id]
       );
+
       if (!goods) {
         await connection.rollback();
         return res.status(404).json({ code: 404, msg: '商品不存在' });
       }
-
-      // 更新商品数据
+      const finalAddressId = address_id ? Number(address_id) : null;
       await connection.query(
         `UPDATE goods 
-         SET name=?, price=?, description=?, image_url=?, 
-             street=?, detail_address=?, category_id=?
-         WHERE goods_id=?`,
-        [name, price, description, image_url, street, detail_address, category_id, goods_id]
+         SET 
+           name = ?,
+           price = ?,
+           description = ?,
+           image_url = ?,
+           street = ?,
+           detail_address = ?,
+           category_id = ?,
+           address_id = ?,
+           contact_name = ?,
+           contact_phone = ?
+         WHERE goods_id = ?`,
+        [
+          name,
+          price,
+          description,
+          image_url,
+          street,
+          detail_address,
+          category_id,
+          finalAddressId,
+          contact_name || '',
+          contact_phone || '',
+          goods_id
+        ]
       );
 
       await connection.commit();
       res.json({ code: 200, msg: '更新成功' });
     } catch (err) {
       await connection.rollback();
-      throw err;
+      res.status(500).json({ code: 500, msg: '更新失败' });
     } finally {
       connection.release();
     }
   } catch (err) {
-    console.error('更新商品失败:', err);
-    res.status(500).json({ code: 500, msg: '更新商品失败' });
+    console.error('接口异常', err);
+    res.status(500).json({ code: 500, msg: '服务器异常' });
   }
 });
 
