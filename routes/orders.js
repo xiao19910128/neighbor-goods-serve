@@ -4,81 +4,109 @@ const pool = require('../config/db');
 
 // 创建订单
 router.post('/create', async (req, res) => {
+  let connection; // 提前声明，用于事务
   try {
     const { user_id, goods_id } = req.body;
-    // 1. 参数校验（关键防御）
+
+    // 1. 参数校验
     if (!user_id || !goods_id) {
       return res.status(400).json({ code: 400, msg: '参数不完整' });
     }
-    // 2. 统一转为数字，避免类型不匹配
+    // 统一转为数字，避免类型不匹配
     const userId = parseInt(user_id);
     const goodsId = parseInt(goods_id);
     if (isNaN(userId) || isNaN(goodsId)) {
       return res.status(400).json({ code: 400, msg: '参数格式错误' });
     }
-    // 校验当前用户是否被禁用
-    const [userRows] = await pool.query(
+
+    // 2. 获取连接（开启事务）
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+
+    // 3. 校验用户是否被禁用
+    const [userRows] = await connection.query(
       'SELECT user_status FROM users WHERE user_id = ?',
-      [user_id]
+      [userId]
     );
-    // 如果用户是禁用状态，直接拦截
-    if (userRows[0].user_status === 2) {
-      return res.status(403).json({
-        code: 403,
-        message: '账号已被禁用，无法创建订单'
-      });
+    if (!userRows.length || userRows[0].user_status === 2) {
+      await connection.rollback();
+      connection.release();
+      return res.status(403).json({ code: 403, msg: '账号异常，无法下单' });
     }
-    // 3. 查询商品信息（获取卖家ID、价格、标题）
-    const [goods] = await pool.query('SELECT * FROM goods WHERE goods_id=?', [goods_id]);
+
+    // 4. 查询商品信息
+    const [goods] = await connection.query(
+      'SELECT * FROM goods WHERE goods_id = ?',
+      [goodsId]
+    );
     if (goods.length === 0) {
+      await connection.rollback();
+      connection.release();
       return res.status(404).json({ code: 404, msg: '商品不存在' });
     }
+
     const goodsInfo = goods[0];
-    const order_no = 'ORDER' + Date.now(); // 生成唯一订单号
-    await pool.execute('UPDATE goods SET status=2 WHERE goods_id=?', [goods_id]);  // 锁定商品，防止重复下单
-    // 4. 插入订单
-    await pool.query(`
+
+    // 5. 拦截：自己不能买自己的商品
+    if (goodsInfo.user_id === userId) {
+      await connection.rollback();
+      connection.release();
+      return res.status(400).json({ code: 400, msg: '不能购买自己发布的商品' });
+    }
+
+    // 6. 拦截：商品已下架 / 已售出 / 锁定
+    // goods_status（商品状态）：1=正常展示 2=已被下单锁定 0=已删除
+    // audit_status（审核状态）: 0-待审核 1-审核通过 2-审核拒绝
+    if ([0, 2].includes(goodsInfo.goods_status) || goodsInfo.audit_status !== 1) {
+      await connection.rollback();
+      connection.release();
+      return res.status(400).json({ code: 400, msg: '商品已被购买或已下架' });
+    }
+
+    // 7. 锁定商品（防止重复下单）
+    await connection.query(
+      'UPDATE goods SET goods_status = 2 WHERE goods_id = ?',
+      [goodsId]
+    );
+
+    // 8. 生成订单号
+    const order_no = 'ORDER' + Date.now();
+
+    // 9. 插入订单（唯一一次INSERT）
+    await connection.query(`
       INSERT INTO orders 
-      (order_no, user_id, seller_id, goods_id, goods_title, goods_price, address_id, status) 
+      (order_no, user_id, seller_id, goods_id, goods_title, goods_price, address_id, order_status) 
       VALUES (?, ?, ?, ?, ?, ?, ?, 1)
     `, [
       order_no,
-      user_id,
-      goodsInfo.user_id,
-      goods_id,
+      userId,            // 买家
+      goodsInfo.user_id, // 卖家
+      goodsId,
       goodsInfo.name,
       goodsInfo.price,
-      goodsInfo.address_id || null, // 默认地址ID，如果未提供则为null
+      goodsInfo.address_id || null, // 地址
     ]);
 
-    await connection.query(
-      `INSERT INTO orders (
-        goods_id,
-        user_id,
-        seller_id,
-        address_id,
-        contact_name,
-        contact_phone,
-        order_status,
-        create_time
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())`,
-      [
-        goods_id,
-        user_id, // 买家ID
-        seller_id, // 卖家ID（商品的publisher_id）
-        address_id || null, // 关联的地址ID，空则传NULL
-        contact_name || '',
-        contact_phone || '',
-        0 // 订单状态：待付款
-      ]
-    );
+    // 10. 提交事务
+    await connection.commit();
+    connection.release();
 
-    res.json({ code: 200, msg: '下单成功', order_no });
+    return res.json({
+      code: 200,
+      msg: '下单成功',
+      order_no
+    });
+
   } catch (err) {
-    res.status(500).json({ 
-      code: 500, 
-      msg: '服务器错误',
-      error: err.message 
+    // 异常回滚
+    if (connection) await connection.rollback();
+    if (connection) connection.release();
+
+    console.error('创建订单失败：', err);
+    return res.status(500).json({
+      code: 500,
+      msg: '下单失败，服务器异常',
+      error: err.message
     });
   }
 });
@@ -108,9 +136,9 @@ router.get('/list', async (req, res) => {
 router.post('/updateStatus', async (req, res) => {
   let connection;
   try {
-    const { order_id, status, user_id } = req.body;
+    const { order_id, order_status, user_id } = req.body;
     // 1. 必传参数校验
-    if (!order_id || !status || !user_id) {
+    if (!order_id || !order_status || !user_id) {
       return res.status(400).json({ code: 400, message: '参数不完整' });
     }
     // 2. 获取数据库连接
@@ -130,43 +158,43 @@ router.post('/updateStatus', async (req, res) => {
       });
     }
 
-    // 根据不同状态自动处理商品锁定/释放
-    // 如果是【退单 / 取消订单】status = 5
-    // → 商品恢复上架 status = 1
-    if (status === 5) {
-      const [orderRows] = await connection.query(
-        'SELECT goods_id FROM orders WHERE order_id = ?',
-        [order_id]
+    const [orderRows] = await connection.query(
+      'SELECT goods_id FROM orders WHERE order_id = ?',
+      [order_id]
+    );
+    if (orderRows.length === 0) {
+      return res.status(404).json({ code: 404, message: '订单不存在' });
+    }
+    const goods_id = orderRows[0].goods_id;
+    // 取消订单/退单 order_status = 5
+    if (order_status === 5) {
+      // 商品解锁 → 恢复可购买
+      await connection.query(
+        'UPDATE goods SET order_status = 1 WHERE goods_id = ?',
+        [goods_id]
       );
-      if (orderRows.length > 0) {
-        const goods_id = orderRows[0].goods_id;
-        // 退单 → 商品释放，重新显示
-        await connection.query(
-          'UPDATE goods SET status = 1 WHERE goods_id = ?',
-          [goods_id]
-        );
-      }
     }
 
-    // 如果是【卖家确认完成】status = 4
-    // → 商品保持锁定
-    if (status === 4) {
-      const [orderResult] = await connection.query(
-        'SELECT goods_id FROM orders WHERE order_id = ?',
-        [order_id]
+    // 订单完成 order_status = 4
+    if (order_status === 4) {
+      // 商品标记为已售出
+      await connection.query(
+        'UPDATE goods SET order_status = 2 WHERE goods_id = ?',
+        [goods_id]
       );
-      if (orderResult.length > 0) {
-        await connection.query(
-          'UPDATE goods SET audit_status = 4 WHERE goods_id = ?',
-          [orderResult[0].goods_id]
-        );
-      }
     }
 
-    // 统一更新订单状态
+    // 待确认 / 待自提 / 待收货 → 锁定商品
+    if ([1, 2, 3].includes(order_status)) {
+      await connection.query(
+        'UPDATE goods SET order_status = 2 WHERE goods_id = ?',
+        [goods_id]
+      );
+    }
+
     await connection.query(
-      'UPDATE orders SET status = ? WHERE order_id = ?',
-      [status, order_id]
+      'UPDATE orders SET order_status = ? WHERE order_id = ?',
+      [order_status, order_id]
     );
 
     res.json({ code: 200, message: '状态更新成功' });
@@ -233,13 +261,13 @@ router.post('/detail', async (req, res) => {
     }
 
     // 用户禁用拦截
-    const [userRows] = await db.execute('SELECT user_status FROM users WHERE user_id = ?', [user_id]);
+    const [userRows] = await pool.execute('SELECT user_status FROM users WHERE user_id = ?', [user_id]);
     if (userRows.length === 0 || userRows[0].user_status === 2) {
       return res.status(403).json({ code: 403, message: '账号异常，无法查看订单' });
     }
 
     // 查询订单详情（关联商品、买家/卖家信息）
-    const [orderRows] = await db.execute(`
+    const [orderRows] = await pool.execute(`
       SELECT o.*, g.name, g.image_url, g.price,
              b.nick_name AS buyer_nickname, b.phone AS buyer_phone,
              s.nick_name AS seller_nickname, s.phone AS seller_phone

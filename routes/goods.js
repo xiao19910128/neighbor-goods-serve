@@ -5,36 +5,45 @@ const db = require('../config/db');
 router.get('/query', async (req, res) => {
   try {
     // 1. 获取查询参数
-    const { name } = req.query;
+    // 过滤自己发布的闲置，未登录时没有user_id，查询全部
+    const { name, user_id } = req.query;
 
-    // 2. 构建SQL语句和参数
     let sql = `
       SELECT g.*, u.username AS publish_user, c.name AS category_name
       FROM goods g
       LEFT JOIN users u ON g.user_id = u.user_id
       LEFT JOIN category c ON g.category_id = c.category_id
-      WHERE g.audit_status = 1 AND g.status = 1
+      WHERE g.audit_status = 1 AND g.goods_status = 1
     `;
-     // 展示已审批通过且没有被锁单的商品 status 1=正常展示 2=已被下单锁定 0=已删除
-    const params = [];
+     // 展示已审批通过且没有被锁单的商品 goods_status 1=正常展示 2=已被下单锁定 0=已删除
+    let params = [];
+
+    // 如果用户已登录（有传 user_id），才追加过滤条件
+    if (user_id !== undefined && user_id !== null && user_id !== '') {
+      sql += ` AND g.user_id != ?`;
+      params.push(user_id); // 只在有值时加入参数
+    }
     // 如果传了 name 参数，添加模糊查询条件
     if (name && name.trim() !== '') {
       sql += ' AND g.name LIKE ?';
       params.push(`%${name.trim()}%`);
     }
-    // 排序
     sql += ' ORDER BY g.release_time DESC';
-    // 3. 执行查询
-    const [rows] = await db.execute(sql, params);
+    // 执行查询
+    const [goodsList] = await db.execute(sql, params);
 
     res.json({
       code: 200,
-      message: '获取商品列表成功',
-      data: rows
+      data: goodsList,
+      msg: '获取成功'
     });
   } catch (err) {
-    console.error('数据库查询错误 ===', err);
-    res.status(500).json({ code: 500, message: '服务器内部错误' });
+    console.error('商品列表查询错误：', err);
+    res.status(500).json({
+      code: 500,
+      msg: '服务器错误',
+      error: err.message
+    });
   }
 });
 
@@ -42,7 +51,7 @@ router.get('/query', async (req, res) => {
 router.post('/add', async (req, res) => {
   try {
     // 1. 获取请求体中的数据--前端入参
-    const { name, price, description, status, image_url } = req.body;
+    const { name, price, description, goods_status, image_url } = req.body;
     // 2. 参数校验（必填项检查）
     if (!name) {
       return res.status(400).json({
@@ -58,8 +67,8 @@ router.post('/add', async (req, res) => {
     }
     // 3. 执行插入SQL（用?占位符防止SQL注入）
     const [result] = await db.execute(
-      'INSERT INTO goods (name, price, description, status, image_url) VALUES (?, ?, ?, ?, ?)',
-      [name, Number(price), description || null, status ?? 1, image_url || null] // 给可选字段设默认值
+      'INSERT INTO goods (name, price, description, goods_status, image_url) VALUES (?, ?, ?, ?, ?)',
+      [name, Number(price), description || null, goods_status ?? 1, image_url || null] // 给可选字段设默认值
     );
 
     // 4. 返回成功响应（包含新增商品的ID）
@@ -423,36 +432,44 @@ router.post('/deletePublished', async (req, res) => {
     // 查询用户状态--禁用账号不可删除
     const [user] = await connection.execute(`SELECT user_status FROM users WHERE user_id = ?`, [user_id]);
     if (user[0]?.user_status === 2) {
+      connection.release(); // 必须释放连接
       return res.status(403).json({ code: 403, message: '账号已被禁用，无法删除商品' });
     }
-    // 2. 用连接池获取连接（和项目其他接口保持一致）
+
+    // 进行中订单不允许删除商品--待确认/待自提/待收货
+    const [orderList] = await connection.execute(
+      `SELECT order_status FROM orders WHERE goods_id = ? AND order_status IN (1,2,3)`, 
+      [goods_id]
+    );
+    // order_status=1待确认 / 2待交割 / 3待收货 → 属于进行中订单
+    if (orderList.length > 0) {
+      connection.release();
+      return res.status(400).json({ 
+        code: 400, 
+        msg: "该商品存在未完成订单，无法删除，请先处理订单" 
+      });
+    }
     try {
-      // 3. 执行删除
+      // 执行删除
       const [result] = await connection.execute(
         'DELETE FROM goods WHERE goods_id = ?',
         [goods_id]
       );
-      // 4. 判断是否真的删除了数据
       if (result.affectedRows === 0) {
         return res.status(404).json({ code: 404, msg: '商品不存在或已删除' });
       }
 
-      res.json({
-        code: 200,
-        msg: '删除成功'
-      });
+      res.json({ code: 200, msg: '删除成功' });
     } finally {
-      // 5. 确保连接一定释放回池
       connection.release();
     }
 
   } catch (err) {
-    // 打印完整错误日志，方便排查
     console.error('删除商品失败:', err);
     res.status(500).json({ 
       code: 500, 
       msg: '删除商品失败',
-      error: err.message // 开发环境返回具体错误信息
+      error: err.message
     });
   }
 });
