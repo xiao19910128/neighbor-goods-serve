@@ -166,36 +166,34 @@ router.post('/updateStatus', async (req, res) => {
       return res.status(404).json({ code: 404, message: '订单不存在' });
     }
     const goods_id = orderRows[0].goods_id;
-    // 取消订单/退单 order_status = 5
+    // 先更新订单状态，再处理商品状态
+    await connection.query(
+      'UPDATE orders SET order_status = ? WHERE order_id = ?',
+      [order_status, order_id]
+    );
+    // 3. 按订单状态更新商品状态（核心修正）
+    // 取消订单/退单 order_status = 5 → 商品恢复可售（order_status=0）
     if (order_status === 5) {
-      // 商品解锁 → 恢复可购买
+      await connection.query(
+        'UPDATE goods SET order_status = 0, goods_status = 1 WHERE goods_id = ?',
+        [goods_id]
+      );
+    }
+    // 订单完成 order_status = 4 → 商品标记为已售出（order_status=2）
+    else if (order_status === 4) {
+      await connection.query(
+        'UPDATE goods SET order_status = 2 WHERE goods_id = ?',
+        [goods_id]
+      );
+    }
+
+    // 待确认 / 待自提 / 待收货 order_status = 1/2/3 → 商品锁定（order_status=1）
+    else if ([1, 2, 3].includes(order_status)) {
       await connection.query(
         'UPDATE goods SET order_status = 1 WHERE goods_id = ?',
         [goods_id]
       );
     }
-
-    // 订单完成 order_status = 4
-    if (order_status === 4) {
-      // 商品标记为已售出
-      await connection.query(
-        'UPDATE goods SET order_status = 2 WHERE goods_id = ?',
-        [goods_id]
-      );
-    }
-
-    // 待确认 / 待自提 / 待收货 → 锁定商品
-    if ([1, 2, 3].includes(order_status)) {
-      await connection.query(
-        'UPDATE goods SET order_status = 2 WHERE goods_id = ?',
-        [goods_id]
-      );
-    }
-
-    await connection.query(
-      'UPDATE orders SET order_status = ? WHERE order_id = ?',
-      [order_status, order_id]
-    );
 
     res.json({ code: 200, message: '状态更新成功' });
   } catch (err) {
