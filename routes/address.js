@@ -23,20 +23,43 @@ router.get('/list', async (req, res) => {
 router.post('/add', async (req, res) => {
   try {
     const { user_id, contact_name, contact_phone, province, city, district, street, detail_address, is_default } = req.body;
-    // 强制转为数字，确保一致性
-    const userId = parseInt(user_id);
-    if (is_default == 1) {
-      await pool.query('UPDATE address SET is_default=0 WHERE user_id=?', [userId]);
+    if (!user_id || !contact_name || !contact_phone || !province || !city || !district || !street || !detail_address) {
+      return res.status(400).json({ code: 400, message: '参数不完整' });
     }
 
-    const [result] = await pool.query(
-      'INSERT INTO address (user_id, contact_name, contact_phone, province, city, district, street, detail_address, is_default) VALUES (?,?,?,?,?,?,?,?,?)',
-      [userId, contact_name, contact_phone, province || '上海市', city || '上海市', district || '闵行区', street || '梅陇镇', detail_address, is_default || 0]
-    );
+    // 1. 新增重复地址校验
+    const [existingAddress] = await pool.execute(`
+      SELECT address_id FROM address
+      WHERE user_id = ? 
+        AND contact_name = ? 
+        AND contact_phone = ? 
+        AND province = ? 
+        AND city = ? 
+        AND district = ? 
+        AND street = ? 
+        AND detail_address = ?
+      LIMIT 1
+    `, [user_id, contact_name, contact_phone, province, city, district, street, detail_address]);
 
-    res.json({ code: 200, msg: '添加成功', address_id: result.insertId });
+    if (existingAddress.length > 0) {
+      // 地址已存在，直接返回已有地址ID，不再新增
+      return res.json({
+        code: 200,
+        message: '地址已存在',
+        data: { address_id: existingAddress[0].address_id }
+      });
+    }
+
+    // 2. 正常的新增地址逻辑
+    await pool.execute(`
+      INSERT INTO address (user_id, contact_name, contact_phone, province, city, district, street, detail_address, is_default, created_time)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+    `, [user_id, contact_name, contact_phone, province, city, district, street, detail_address, is_default || 0]);
+
+    res.json({ code: 200, message: '地址添加成功' });
   } catch (err) {
-    res.status(500).json({ code: 500, msg: '添加失败' });
+    console.error('添加地址失败:', err);
+    res.status(500).json({ code: 500, message: '服务器错误' });
   }
 });
 // 3. 修改地址
