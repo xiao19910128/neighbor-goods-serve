@@ -1,6 +1,31 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../config/db');
+// 商品发布接口 - 敏感词检测
+async function checkSensitiveWords(text, db) {
+  const [rows] = await db.execute('SELECT word FROM sensitive_words');
+  const words = rows.map(r => r.word);
+  if (words.length === 0) return false;
+  const reg = new RegExp(words.join('|'), 'g');
+  return reg.test(text);
+}
+// 修正版脱敏函数
+async function desensitizeText(text, db) {
+  if (!text) return '';
+  // 1. 一次性获取所有敏感词
+  const [rows] = await db.execute('SELECT word FROM sensitive_words');
+  if (rows.length === 0) return text;
+
+  // 2. 关键：把所有词拼接成一个正则，一次性替换，避免循环创建正则
+  const words = rows.map(r => r.word);
+  // 转义特殊字符（防止词里有. * + 等正则元字符）
+  const escapedWords = words.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const reg = new RegExp(escapedWords.join('|'), 'g');
+
+  // 3. 一次替换所有敏感词
+  return text.replace(reg, '***');
+}
+
 // 获取商品列表
 router.get('/query', async (req, res) => {
   try {
@@ -92,11 +117,7 @@ router.post('/add', async (req, res) => {
 router.post('/publish', async (req, res) => {
   let connection;
   try {
-    // 1. 获取连接并开启事务
-    connection = await db.getConnection();
-    await connection.beginTransaction();
-
-    // 2. 解构所有前端参数
+    // 1. 先获取所有参数
     const {
       name,
       price,
@@ -112,17 +133,32 @@ router.post('/publish', async (req, res) => {
       street,
       contact_name,
       contact_phone,
-      publisher_name, publisher_id
+      publisher_name,
+      publisher_id
     } = req.body;
 
-    // 3. 参数基础校验
+    // 2. 【关键】先做敏感词检测（在事务外面！！）
+    const fullText = `${name} ${description}`;
+    const isSensitive = await checkSensitiveWords(fullText, db);
+    if (isSensitive) {
+      return res.status(400).json({ code: 400, message: '商品包含违规内容，禁止发布' });
+    }
+
+    // 3. 【关键】先做脱敏（在事务外面，避免事务内多次IO）
+    const safeName = await desensitizeText(name, db);
+    const safeDesc = await desensitizeText(description, db);
+    const safeDetailAddr = await desensitizeText(detail_address, db);
+
+    // 4. 基础参数校验
     if (!name || !price || !category_id || !publisher_id) {
-      await connection.rollback();
-      connection.release();
       return res.status(400).json({ code: -1, msg: '必填字段不能为空' });
     }
 
-    // 4. 校验用户是否存在 & 账号状态
+    // 5. 现在才开启事务（事务里只做写操作，不做读操作）
+    connection = await db.getConnection();
+    await connection.beginTransaction();
+
+    // 校验用户状态
     const [[user]] = await connection.query(
       'SELECT user_status FROM users WHERE user_id = ? LIMIT 1',
       [user_id]
@@ -138,7 +174,7 @@ router.post('/publish', async (req, res) => {
       return res.status(403).json({ code: -1, msg: '账号已被禁用，无法发布商品' });
     }
 
-    // 5. 校验分类是否存在
+    // 校验分类
     const [[category]] = await connection.query(
       'SELECT 1 FROM category WHERE category_id = ? LIMIT 1',
       [category_id]
@@ -149,10 +185,9 @@ router.post('/publish', async (req, res) => {
       return res.status(400).json({ code: -1, msg: '分类不存在' });
     }
 
-    // 6. 处理自提地址逻辑
+    // 处理地址
     let finalAddressId = 0;
     if (address_id && address_id !== 0) {
-      // 情况1：用户选了已有地址，校验归属
       const [[addr]] = await connection.query(
         'SELECT address_id FROM address WHERE address_id = ? AND user_id = ? LIMIT 1',
         [address_id, user_id]
@@ -164,7 +199,6 @@ router.post('/publish', async (req, res) => {
       }
       finalAddressId = address_id;
     } else {
-      // 情况2：用户填了新地址，自动保存到地址库
       if (!contact_name || !contact_phone) {
         await connection.rollback();
         connection.release();
@@ -195,7 +229,7 @@ router.post('/publish', async (req, res) => {
       finalAddressId = addrResult.insertId;
     }
 
-    // 7. 插入商品表
+    // 插入商品（事务内唯一的写操作）
     const [goodsResult] = await connection.execute(
       `INSERT INTO goods (
         name, price, description, image_url,
@@ -205,9 +239,9 @@ router.post('/publish', async (req, res) => {
         publisher_name, publisher_id
       ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        name || '',
+        safeName || '',
         price || 0,
-        description || '',
+        safeDesc || '',
         image_url || '',
         category_id || 0,
         user_id,
@@ -215,7 +249,7 @@ router.post('/publish', async (req, res) => {
         city || '上海市',
         district || '闵行区',
         street || '梅陇镇',
-        detail_address || '',
+        safeDetailAddr || '',
         finalAddressId,
         contact_name || '',
         contact_phone || '',
@@ -224,7 +258,7 @@ router.post('/publish', async (req, res) => {
       ]
     );
 
-    // 8. 提交事务
+    // 提交事务
     await connection.commit();
     connection.release();
     return res.json({
@@ -234,7 +268,6 @@ router.post('/publish', async (req, res) => {
     });
 
   } catch (err) {
-    // 异常回滚
     if (connection) {
       await connection.rollback();
       connection.release();
@@ -511,6 +544,8 @@ router.get('/detail', async (req, res) => {
 });
 
 // 更新商品信息
+
+// 更新商品信息（完整版：敏感词+脱敏+事务）
 router.post('/update', async (req, res) => {
   try {
     const {
@@ -531,27 +566,35 @@ router.post('/update', async (req, res) => {
     if (!goods_id || !name || !price || !category_id) {
       return res.status(400).json({ code: 400, msg: '必填字段不能为空' });
     }
-    // 查询用户状态--禁用账号不可更新
+    // 1. 先检查用户状态--禁用账号不可更新
     const [user] = await db.execute('SELECT user_status FROM users WHERE user_id = ?', [user_id]);
-    if (user[0]?.user_status === 2) {
+    if (!user || user[0]?.user_status === 2) {
       return res.status(403).json({ code: 403, message: '账号已禁用' });
     }
-
+    // 2. 【关键】敏感词检测（事务外面）
+    const fullText = `${name} ${description}`;
+    const isSensitive = await checkSensitiveWords(fullText, db);
+    if (isSensitive) {
+      return res.status(400).json({ code: 400, message: '商品包含违规内容，禁止修改' });
+    }
+    // 3. 【关键】脱敏处理
+    const safeName = await desensitizeText(name, db);
+    const safeDesc = await desensitizeText(description, db);
+    const safeDetailAddr = await desensitizeText(detail_address, db);
+    // 4. 开启事务执行更新
     const connection = await db.getConnection();
     await connection.beginTransaction();
 
     try {
       // 检查商品是否存在
-      const [[goods]] = await connection.query(
-        'SELECT * FROM goods WHERE goods_id = ?',
-        [goods_id]
-      );
-
+      const [[goods]] = await connection.query('SELECT * FROM goods WHERE goods_id = ?', [goods_id]);
       if (!goods) {
         await connection.rollback();
+        connection.release();
         return res.status(404).json({ code: 404, msg: '商品不存在' });
       }
       const finalAddressId = address_id ? Number(address_id) : null;
+      // 执行更新（使用脱敏后内容）
       await connection.query(
         `UPDATE goods 
          SET 
@@ -567,12 +610,12 @@ router.post('/update', async (req, res) => {
            contact_phone = ?
          WHERE goods_id = ?`,
         [
-          name,
+          safeName,
           price,
-          description,
+          safeDesc,
           image_url,
           street,
-          detail_address,
+          safeDetailAddr,
           category_id,
           finalAddressId,
           contact_name || '',
@@ -582,15 +625,17 @@ router.post('/update', async (req, res) => {
       );
 
       await connection.commit();
+      connection.release();
       res.json({ code: 200, msg: '更新成功' });
     } catch (err) {
       await connection.rollback();
-      res.status(500).json({ code: 500, msg: '更新失败' });
-    } finally {
       connection.release();
+      console.error('更新事务异常:', err);
+      res.status(500).json({ code: 500, msg: '更新失败' });
     }
+
   } catch (err) {
-    console.error('接口异常', err);
+    console.error('更新接口异常:', err);
     res.status(500).json({ code: 500, msg: '服务器异常' });
   }
 });
@@ -606,9 +651,13 @@ router.get('/admin/list', async (req, res) => {
     // 2. 筛选参数（前端传参）
     const { keyword = '', audit_status = '', publish_user = '' } = req.query;
 
-    // 3. 构建动态SQL（核心：多条件模糊+筛选）
+    // 3. 构建动态SQL（补上 order_status 字段交易锁定状态）
     let sql = `
-      SELECT g.*, u.username AS publish_user, c.name AS category_name 
+      SELECT 
+        g.*, 
+        u.username AS publish_user, 
+        c.name AS category_name,
+        g.order_status
       FROM goods g 
       LEFT JOIN users u ON g.user_id = u.user_id 
       LEFT JOIN category c ON g.category_id = c.category_id 
@@ -649,12 +698,31 @@ router.get('/admin/list', async (req, res) => {
     const total = totalRows[0].total;
     const [rows] = await db.query(sql, params);
 
-    // 7. 返回结果
+    // 7. 🔥 优化：给商品追加状态文字（前端直接用，非常友好）
+    const formatList = rows.map(item => ({
+      ...item,
+      // 审核状态文字
+      audit_status_text:
+        item.audit_status === 0 ? '待审核'
+        : item.audit_status === 1 ? '已上架'
+        : item.audit_status === 2 ? '已拒绝'
+        : item.audit_status === 3 ? '已下架'
+        : item.audit_status === 4 ? '已完成'
+        : '未知状态',
+      // 交易状态文字（🔥 下架锁定判断用）
+      order_status_text:
+        item.order_status === 0 ? '可售'
+        : item.order_status === 1 ? '交易中'
+        : item.order_status === 2 ? '已售出'
+        : '未知'
+    }));
+
+    // 8. 返回结果
     res.json({
       code: 200,
       message: '查询成功',
       data: {
-        list: rows,
+        list: formatList,
         total,
         page,
         limit,
@@ -678,12 +746,13 @@ router.post('/admin/operate', async (req, res) => {
       return res.status(400).json({ code: 400, message: '参数不完整' });
     }
 
-    // 2. 先查询商品当前状态，校验操作合法性
-    const [goods] = await db.query(`SELECT * FROM goods WHERE goods_id = ?`, [goods_id]);
+    // 2. 先查询商品当前状态 + 交易锁定状态
+    const [goods] = await db.query(`SELECT audit_status, order_status FROM goods WHERE goods_id = ?`, [goods_id]);
     if (goods.length === 0) {
       return res.status(404).json({ code: 404, message: '商品不存在' });
     }
     const currentStatus = goods[0].audit_status;
+    const orderStatus = goods[0].order_status; // 交易状态：0=可售 1=锁定 2=已售出
 
     // 3. 执行对应操作
     let updateSql = '';
@@ -716,17 +785,26 @@ router.post('/admin/operate', async (req, res) => {
         if (currentStatus !== 3) {
           return res.status(400).json({ code: 400, message: '仅下架商品可上架' });
         }
-        updateSql = `UPDATE goods SET audit_status = 1 WHERE goods_id = ?`;
+        updateSql = `UPDATE goods SET audit_status = 1, goods_status = 1 WHERE goods_id = ?`;
         updateParams = [goods_id];
         successMsg = '商品已上架';
         break;
 
-      // 下架
+      // 下架：增加【锁定商品不可下架】逻辑
       case 'down':
         if (currentStatus !== 1) {
           return res.status(400).json({ code: 400, message: '仅上架商品可下架' });
         }
-        updateSql = `UPDATE goods SET audit_status = 3 WHERE goods_id = ?`;
+
+        // 交易锁定的商品，禁止下架
+        if (orderStatus === 1) {
+          return res.status(400).json({
+            code: 400,
+            message: '该商品正在交易中，无法下架'
+          });
+        }
+
+        updateSql = `UPDATE goods SET audit_status = 3, goods_status = 2 WHERE goods_id = ?`;
         updateParams = [goods_id];
         successMsg = '商品已下架';
         break;
