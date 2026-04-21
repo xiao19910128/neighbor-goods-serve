@@ -86,6 +86,10 @@ router.post('/create', async (req, res) => {
       goodsInfo.price,
       goodsInfo.address_id || null, // 地址
     ]);
+      // 更新商品表，标记为锁定状态--否则商品表的order_status没更新，数据不一致
+    await connection.query(`
+      UPDATE goods SET order_status = 1 WHERE goods_id = ?
+    `, [goods_id]);
 
     // 10. 提交事务
     await connection.commit();
@@ -251,60 +255,55 @@ router.get('/adminOrderList', async (req, res) => {
 });
 
 // 订单详情接口
-router.post('/detail', async (req, res) => {
+router.get('/detail', async (req, res) => {
   try {
-    const { order_id, user_id } = req.body;
-    if (!order_id || !user_id) {
-      return res.status(400).json({ code: 400, message: '参数错误' });
+    const { order_id } = req.query;
+    if (!order_id) {
+      return res.status(400).json({ code: 400, message: '订单ID不能为空' });
     }
 
-    // 用户禁用拦截
-    const [userRows] = await pool.execute('SELECT user_status FROM users WHERE user_id = ?', [user_id]);
-    if (userRows.length === 0 || userRows[0].user_status === 2) {
-      return res.status(403).json({ code: 403, message: '账号异常，无法查看订单' });
-    }
-
-    // 查询订单详情（关联商品、买家/卖家信息）
-    const [orderRows] = await pool.execute(`
-      SELECT o.*, g.name, g.image_url, g.price,
-             b.nick_name AS buyer_nickname, b.phone AS buyer_phone,
-             s.nick_name AS seller_nickname, s.phone AS seller_phone
+    const [orders] = await pool.query(`
+      SELECT 
+        o.*,
+        u.username AS buyer_name,
+        u.phone AS buyer_phone,
+        s.username AS seller_name,
+        s.phone AS seller_phone,
+        g.name AS goods_name,
+        g.price AS goods_price,
+        g.image_url,
+        g.goods_status,
+        g.audit_status
       FROM orders o
-      LEFT JOIN goods g ON o.goods_id = g.goods_id
-      LEFT JOIN users b ON o.buyer_id = b.user_id
+      LEFT JOIN users u ON o.user_id = u.user_id
       LEFT JOIN users s ON o.seller_id = s.user_id
+      LEFT JOIN goods g ON o.goods_id = g.goods_id
       WHERE o.order_id = ?
+      LIMIT 1
     `, [order_id]);
 
-    if (orderRows.length === 0) {
+    if (orders.length === 0) {
       return res.status(404).json({ code: 404, message: '订单不存在' });
     }
 
-    const order = orderRows[0];
-    // 判断当前用户是买家还是卖家，返回对方信息
-    const isBuyer = order.buyer_id === user_id;
-    const oppositeInfo = isBuyer ? {
-      user_id: order.seller_id,
-      nickname: order.seller_nickname,
-      phone: order.seller_phone
-    } : {
-      user_id: order.buyer_id,
-      nickname: order.buyer_nickname,
-      phone: order.buyer_phone
-    };
+    // 订单状态文字说明（前端直接用）
+    const order = orders[0];
+    order.order_status_text = 
+      order.order_status === 0 ? '待付款'
+      : order.order_status === 1 ? '交易中'
+      : order.order_status === 2 ? '已完成'
+      : order.order_status === 3 ? '已取消'
+      : '未知状态';
 
     res.json({
       code: 200,
-      data: {
-        ...order,
-        opposite_user_id: oppositeInfo.user_id,
-        opposite_nickname: oppositeInfo.nickname,
-        opposite_phone: oppositeInfo.phone
-      }
+      message: '查询成功',
+      data: order
     });
+
   } catch (err) {
-    console.error('获取订单详情失败:', err);
-    res.status(500).json({ code: 500, message: '服务器错误' });
+    console.error('订单详情错误：', err);
+    res.status(500).json({ code: 500, message: '服务器异常' });
   }
 });
 
