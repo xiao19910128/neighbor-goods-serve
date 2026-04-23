@@ -38,7 +38,7 @@ router.get('/query', async (req, res) => {
       FROM goods g
       LEFT JOIN users u ON g.user_id = u.user_id
       LEFT JOIN category c ON g.category_id = c.category_id
-      WHERE g.audit_status = 1 AND g.goods_status = 1
+      WHERE g.audit_status = 1 AND g.goods_status = 1 AND is_deleted = 0
     `;
      // 展示已审批通过且没有被锁单的商品 goods_status 1=正常展示 2=已被下单锁定 0=已删除
     let params = [];
@@ -392,6 +392,7 @@ router.delete('/delete/:id', async (req, res) => {
     });
   }
 })
+
 // 获取当前用户发布的商品列表
 router.get('/published', async (req, res) => {
   try {
@@ -411,19 +412,19 @@ router.get('/published', async (req, res) => {
 
     const connection = await db.getConnection();
     try {
-      // 3. 查询总数（用于分页计算）
+      // 3. 查询总数（过滤已删除商品）
       const [[countResult]] = await connection.query(
-        'SELECT COUNT(*) AS total FROM goods WHERE user_id = ?',
+        'SELECT COUNT(*) AS total FROM goods WHERE user_id = ? AND is_deleted = 0',
         [finalUserId]
       );
       const total = countResult.total;
 
-      // 4. 查询当前页数据（分页 SQL）
+      // 4. 查询当前页数据（过滤已删除商品！）
       const [goodsList] = await connection.query(
         `SELECT goods_id, name, price, description, image_url, 
                 street, detail_address, category_id, user_id, audit_status, release_time
          FROM goods 
-         WHERE user_id = ? 
+         WHERE user_id = ? AND is_deleted = 0
          ORDER BY release_time DESC 
          LIMIT ? OFFSET ?`,
         [finalUserId, pageSize, offset]
@@ -483,9 +484,9 @@ router.post('/deletePublished', async (req, res) => {
       });
     }
     try {
-      // 执行删除
+      // 执行删除--UPDATE更新商品状态，标记软删除
       const [result] = await connection.execute(
-        'DELETE FROM goods WHERE goods_id = ?',
+        'UPDATE goods SET is_deleted = 1 WHERE goods_id = ?',
         [goods_id]
       );
       if (result.affectedRows === 0) {
@@ -518,11 +519,24 @@ router.get('/detail', async (req, res) => {
     const connection = await db.getConnection();
     try {
       const [[goods]] = await connection.query(
-        `SELECT goods_id, name, price, description, image_url, 
-          street, detail_address, category_id, user_id, audit_status,
-          publisher_name, publisher_id
-         FROM goods 
-         WHERE goods_id = ?`,
+        `SELECT 
+          g.goods_id, 
+          g.name, 
+          g.price, 
+          g.description, 
+          g.image_url, 
+          g.street, 
+          g.detail_address, 
+          g.category_id, 
+          g.user_id, 
+          g.audit_status,
+          g.publisher_name, 
+          g.publisher_id,
+          c.name AS category_name
+         FROM goods g
+         LEFT JOIN category c ON g.category_id = c.category_id
+         WHERE g.goods_id = ?
+         AND g.is_deleted = 0`,
         [goods_id]
       );
 
@@ -544,8 +558,6 @@ router.get('/detail', async (req, res) => {
 });
 
 // 更新商品信息
-
-// 更新商品信息（完整版：敏感词+脱敏+事务）
 router.post('/update', async (req, res) => {
   try {
     const {
