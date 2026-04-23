@@ -8,6 +8,11 @@ const jwt = require('jsonwebtoken'); // 用于生成 token
 const axios = require('axios'); // 用于调用微信接口
 const speakeasy = require('speakeasy');
 const redis = require('../config/redis.js');
+// 生成唯一用户名
+function generateUsername() {
+  const suffix = Date.now().toString().slice(-4) + Math.floor(Math.random() * 10000).toString().padStart(4, '0');
+  return `用户${suffix}`;
+}
 
 // 1. 获取验证码接口
 router.post('/getSmsCode', async (req, res) => {
@@ -47,42 +52,53 @@ router.post('/getSmsCode', async (req, res) => {
 // 2. 手机号验证码登录（新增状态校验）
 router.post('/phoneLogin', async (req, res) => {
   let connection;
-  // 后续数据库操作、生成 Token 逻辑
-  connection = await pool.getConnection();
   try {
+  // 后续数据库操作、生成 Token 逻辑
+    connection = await pool.getConnection();
     const { phone, smsCode } = req.body;
-    // 查询用户
-    const [[user]] = await connection.query('SELECT * FROM users WHERE phone = ?', [phone]);
-    // 核心：禁用用户拦截
-    if (user?.user_status === 2) {
-      return res.status(403).json({ code: 403, message: '账号已被禁用，请联系管理员' });
-    }
+
+    // 手机号/验证码参数校验
     if (!phone || !smsCode) {
       return res.status(400).json({ code: 400, msg: '手机号/验证码不能为空' });
     }
 
     // 从 Redis 获取验证码
     const redisCode = await redis.get(`sms_code_${phone}`);
-    // 校验验证码
     if (!redisCode || redisCode !== smsCode) {
       return res.status(400).json({ code: 400, msg: '验证码错误/已过期' });
     }
 
-    let userId, userInfo;
+    // 查询用户是否已存在
+    const [[user]] = await connection.query('SELECT * FROM users WHERE phone = ?', [phone]);
+
+    // 账号禁用判断
+    if (user?.user_status === 2) {
+      return res.status(403).json({ code: 403, message: '账号已被禁用，请联系管理员' });
+    }
+
+    let userId;
+    let userInfo;
+
+    // 只有【新用户】才生成用户名
     if (!user) {
-      // 补充 password 字段，传空字符串
+      // 第一次登录：生成用户名并插入数据库
+      const loginName = generateUsername();
       const [insertResult] = await connection.query(
         'INSERT INTO users (phone, created_time, username, password, openid) VALUES (?, NOW(), ?, ?, ?)',
-        [phone, `用户${phone.slice(-4)}`, '', '']
+        [phone, loginName, '', '']
       );
       userId = insertResult.insertId;
-      userInfo = { user_id: userId, phone };
+      userInfo = { user_id: userId, phone, username: loginName };
     } else {
+      // 老用户直接使用数据库里的用户名，不重新生成！
       userId = user.user_id;
       userInfo = user;
     }
 
+    // 生成 token
     const token = jwt.sign({ userId, phone }, 'your-jwt-secret', { expiresIn: '7d' });
+
+    // 返回正确信息（永远用数据库里的用户名）
     res.json({
       code: 200,
       data: {
@@ -90,7 +106,7 @@ router.post('/phoneLogin', async (req, res) => {
         userInfo: {
           user_id: userId,
           phone,
-          nickName: userInfo.nickName || `用户${phone.slice(-4)}`,
+          nickName: userInfo.username, 
           avatarUrl: userInfo.avatarUrl || '/static/default-avatar.png'
         }
       },
