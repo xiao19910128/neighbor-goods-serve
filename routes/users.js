@@ -270,41 +270,37 @@ router.get('/query', async (req, res) => {
 });
 // 管理员-用户操作（禁用/启用/删除）
 router.post('/admin/operate', async (req, res) => {
+  let connection;
   try {
     const { user_id, action } = req.body;
-
-    // 1. 校验参数
     if (!user_id || !action) {
       return res.status(400).json({ code: 400, message: '参数不完整' });
     }
 
-    // 2. 核心修复：用 db.execute 替代 db.query，确保数据正确读取
-    const [user] = await db.execute(`SELECT * FROM users WHERE user_id = ?`, [user_id]);
+    connection = await pool.getConnection();
+    // 用 db.execute 替代 db.query，确保数据正确读取
+    const [user] = await connection.execute(`SELECT * FROM users WHERE user_id = ?`, [user_id]);
     if (user.length === 0) {
       return res.status(404).json({ code: 404, message: '用户不存在' });
     }
     const currentStatus = user[0].user_status;
-    // 🔴 调试日志：打印当前状态，确认取值
-    console.log(`用户ID: ${user_id}, 当前状态: ${currentStatus}, 操作: ${action}`);
 
     let updateSql = '';
     let updateParams = [];
     let successMsg = '';
 
     switch (action) {
-      // 禁用（正常→禁用）
+      // 禁用
       case 'disable':
-        // 核心修复：判断条件修正 + 日志
         if (currentStatus !== 1) {
-          console.log(`拦截禁用：当前状态不是1，实际为${currentStatus}`);
-          return res.status(400).json({ code: 400, message: `仅正常用户可禁用，当前状态：${currentStatus}` });
+          return res.status(400).json({ code: 400, message: `仅正常用户可禁用` });
         }
         updateSql = `UPDATE users SET user_status = 2 WHERE user_id = ?`;
         updateParams = [user_id];
         successMsg = '用户已禁用';
         break;
 
-      // 启用（禁用→正常）
+      // 启用
       case 'enable':
         if (currentStatus !== 2) {
           return res.status(400).json({ code: 400, message: '仅禁用用户可启用' });
@@ -314,25 +310,38 @@ router.post('/admin/operate', async (req, res) => {
         successMsg = '用户已启用';
         break;
 
-      // 删除（仅禁用用户可删）
+      // 删除（先检查是否存在关联数据）
       case 'delete':
         if (currentStatus !== 2) {
           return res.status(400).json({ code: 400, message: '仅禁用用户可删除' });
         }
-        await db.execute(`DELETE FROM users WHERE user_id = ?`, [user_id]);
+        // 关键：检查是否存在关联数据
+        const [goods] = await connection.execute(`SELECT 1 FROM goods WHERE user_id = ? LIMIT 1`, [user_id]);
+        const [orders] = await connection.execute(`SELECT 1 FROM orders WHERE user_id = ? OR seller_id = ? LIMIT 1`, [user_id, user_id]);
+
+        if (goods.length > 0 || orders.length > 0) {
+          return res.status(400).json({
+            code: 400,
+            message: "无法删除：该用户存在商品或订单，请先清理相关数据后再试"
+          });
+        }
+
+        // 无关联数据 → 允许删除
+        await connection.execute(`DELETE FROM users WHERE user_id = ?`, [user_id]);
         return res.json({ code: 200, message: '用户删除成功' });
 
       default:
         return res.status(400).json({ code: 400, message: '无效操作' });
     }
 
-    // 3. 核心修复：用 db.execute 执行更新，确保参数正确
-    await db.execute(updateSql, updateParams);
+    await connection.execute(updateSql, updateParams);
     res.json({ code: 200, message: successMsg });
 
   } catch (err) {
     console.error('用户操作错误:', err);
-    res.status(500).json({ code: 500, message: '服务器内部错误', error: err.message });
+    res.status(500).json({ code: 500, message: '服务器内部错误' });
+  } finally {
+    if (connection) connection.release();
   }
 });
 

@@ -14,7 +14,7 @@ router.post('/send', async (req, res) => {
     }
     const [userRows] = await db.execute('SELECT user_status FROM users WHERE user_id = ?', [sender_id]);
     if (userRows.length === 0 || userRows[0].user_status === 2) {
-      return res.status(403).json({ code: 403, message: '账号异常，无法发送消息' });
+      return res.status(403).json({ code: 403, message: '账号已被禁用，无法发送消息' });
     }
     let session_id;
     // 前端传的session_id是通过getSessionByUserPair接口下发的，直接信任！不再校验是否存在

@@ -52,7 +52,7 @@ router.get('/myList', async (req, res) => {
         g.name,
         g.price,
         g.image_url,
-        g.status,
+        g.goods_status,
         g.province,
         g.city,
         g.district,

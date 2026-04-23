@@ -31,7 +31,7 @@ router.post('/create', async (req, res) => {
     if (!userRows.length || userRows[0].user_status === 2) {
       await connection.rollback();
       connection.release();
-      return res.status(403).json({ code: 403, msg: '账号异常，无法下单' });
+      return res.status(403).json({ code: 403, msg: '账号已被禁用，无法下单' });
     }
 
     // 4. 查询商品信息
