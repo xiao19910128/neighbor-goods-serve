@@ -6,93 +6,91 @@ const path = require('path');
 const crypto = require('crypto'); // 计算MD5
 const db = require('../config/db');
 
-// 存储配置
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const dir = path.join(__dirname, '../public/uploads');
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    cb(null, dir);
-  },
-  filename: (req, file, cb) => {
-    // 临时文件名，后面会替换成MD5
-    const tmpName = Date.now() + '-' + Math.random() + path.extname(file.originalname);
-    cb(null, tmpName);
+// 工具函数：生成带目录的上传配置
+function createUpload(dirName) {
+  const fullDir = path.join(__dirname, '../public/uploads', dirName);
+  if (!fs.existsSync(fullDir)) {
+    fs.mkdirSync(fullDir, { recursive: true });
   }
-});
 
-const upload = multer({
-  storage,
-  limits: { fileSize: 5 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => {
-    const types = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
-    if (types.includes(file.mimetype)) cb(null, true);
-    else cb(new Error('仅支持图片'));
-  }
-});
-
-// 上传前计算MD5，判断是否已存在
-const checkDuplicateImage = async (req, res, next) => {
-  try {
-    if (!req.file) return next();
-    // 1. 计算文件MD5
-    const buffer = fs.readFileSync(req.file.path);
-    const hash = crypto.createHash('md5').update(buffer).digest('hex');
-    const ext = path.extname(req.file.originalname);
-    const finalFileName = hash + ext;
-    const finalPath = path.join(__dirname, '../public/uploads', finalFileName);
-    const finalUrl = `http://localhost:3000/uploads/${finalFileName}`;
-
-    // 2. 查询数据库是否已存在该MD5
-    const [rows] = await db.execute(
-      'SELECT url FROM uploads WHERE md5 = ?',
-      [hash]
-    );
-
-    if (rows.length > 0) {
-      // 图片已存在 → 删除临时文件 → 直接返回旧URL
-      fs.unlinkSync(req.file.path);
-      return res.json({
-        code: 200,
-        message: '图片已存在（未重复存储）',
-        data: { url: rows[0].url }
-      });
+  const storage = multer.diskStorage({
+    destination: fullDir,
+    filename: (req, file, cb) => {
+      const filename = Date.now() + path.extname(file.originalname);
+      cb(null, filename);
     }
+  });
 
-    // 3. 不存在 → 重命名为MD5文件名
-    fs.renameSync(req.file.path, finalPath);
-    req.file.filename = finalFileName;
-    req.file.md5 = hash;
-    req.file.finalUrl = finalUrl;
-    next();
-  } catch (err) {
-    console.error('MD5校验失败', err);
-    next();
-  }
-};
+  return multer({
+    storage,
+    limits: { fileSize: 5 * 1024 * 1024 },
+    fileFilter: (req, file, cb) => {
+      const allow = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+      allow.includes(file.mimetype) ? cb(null, true) : cb(new Error('仅支持图片'));
+    }
+  });
+}
+
+// 创建两个上传实例
+const uploadPublish = createUpload('publish');
+const uploadChat = createUpload('chat');
+
+// MD5 去重中间件（通用，支持目录）
+function checkDuplicate(dirName) {
+  return async (req, res, next) => {
+    if (!req.file) return next();
+
+    try {
+      const buffer = fs.readFileSync(req.file.path);
+      const hash = crypto.createHash('md5').update(buffer).digest('hex');
+      const ext = path.extname(req.file.originalname);
+      const fileName = hash + ext;
+
+      const targetDir = path.join(__dirname, '../public/uploads', dirName);
+      const targetPath = path.join(targetDir, fileName);
+      const finalUrl = `http://localhost:3000/uploads/${dirName}/${fileName}`;
+
+      // 查询是否已存在
+      const [rows] = await db.execute('SELECT url FROM uploads WHERE md5 = ?', [hash]);
+      if (rows.length > 0) {
+        fs.unlinkSync(req.file.path);
+        return res.json({ code: 200, data: { url: rows[0].url } });
+      }
+
+      // 重命名为 MD5
+      fs.renameSync(req.file.path, targetPath);
+      req.file.filename = fileName;
+      req.file.finalUrl = finalUrl;
+      req.file.md5 = hash;
+      next();
+    } catch (err) {
+      console.error('MD5 失败', err);
+      next();
+    }
+  };
+}
 
 // 保存记录到数据库
-const saveUploadRecord = async (req, res, next) => {
-  try {
-    if (!req.file.md5) return next();
-    await db.execute(
-      'INSERT INTO uploads (md5, filename, url, created_at) VALUES (?, ?, ?, NOW())',
-      [req.file.md5, req.file.filename, req.file.finalUrl]
-    );
-  } catch (e) {}
+const saveRecord = async (req, res, next) => {
+  if (req.file?.md5) {
+    try {
+      await db.execute(
+        'INSERT INTO uploads (md5, filename, url, created_at) VALUES (?, ?, ?, NOW())',
+        [req.file.md5, req.file.filename, req.file.finalUrl]
+      );
+    } catch (e) {}
+  }
   next();
 };
 
-// 最终上传接口
-router.post('/image',
-  upload.single('file'),
-  checkDuplicateImage,
-  saveUploadRecord,
-  (req, res) => {
-    res.json({
-      code: 200,
-      message: '上传成功',
-      data: { url: req.file.finalUrl }
-    });
-  }
-);
+// 商品图片
+router.post('/image', uploadPublish.single('file'), checkDuplicate('publish'), saveRecord, (req, res) => {
+  res.json({ code: 200, data: { url: req.file.finalUrl } });
+});
+
+// 聊天图片
+router.post('/chatImage', uploadChat.single('file'), checkDuplicate('chat'), saveRecord, (req, res) => {
+  res.json({ code: 200, data: { url: req.file.finalUrl } });
+});
+
 module.exports = router;

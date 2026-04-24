@@ -5,7 +5,7 @@ const db = require('../config/db');
 // 1. 发送消息接口
 router.post('/send', async (req, res) => {
   try {
-    const { sender_id, receiver_id, order_id, content, session_id: clientSessionId } = req.body;
+    const { sender_id, receiver_id, order_id, content, session_id: clientSessionId, msg_type } = req.body;
     if (!sender_id || !receiver_id || !content?.trim()) {
       return res.status(400).json({
         code: 400,
@@ -30,9 +30,9 @@ router.post('/send', async (req, res) => {
 
     // 插入消息（一定是前端传的那个 session_id）
     await db.execute(`
-      INSERT INTO messages (session_id, sender_id, receiver_id, order_id, content, is_read, created_at)
-      VALUES (?, ?, ?, ?, ?, 0, NOW())
-    `, [session_id, sender_id, receiver_id, order_id || null, content]);
+      INSERT INTO messages (session_id, sender_id, receiver_id, order_id, content, msg_type, is_read, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, 0, NOW())
+    `, [session_id, sender_id, receiver_id, order_id || null, content, msg_type || 0]);
 
     // ✅ 返回的一定是前端传的 session_id
     res.json({ code: 200, message: '发送成功', session_id });
@@ -54,14 +54,28 @@ router.get('/list', async (req, res) => {
     // 1. 先查出当前用户所有会话的基础信息
     const [sessions] = await db.execute(`
       SELECT 
-        session_id,
-        MAX(created_at) AS last_time,
-        (SELECT content FROM messages WHERE session_id = m.session_id ORDER BY created_at DESC LIMIT 1) AS content,
-        COUNT(CASE WHEN is_read = 0 AND sender_id != ? THEN 1 END) AS unread_count,
-        IF(MAX(sender_id) = ?, MAX(receiver_id), MAX(sender_id)) AS other_user_id, 'https://picsum.photos/id/1005/100/100' AS avatar_url
+        m.session_id,
+        MAX(m.created_at) AS last_time,
+        (
+          SELECT content 
+          FROM messages 
+          WHERE session_id = m.session_id 
+          ORDER BY created_at DESC 
+          LIMIT 1
+        ) AS content,
+        (
+          SELECT msg_type 
+          FROM messages 
+          WHERE session_id = m.session_id 
+          ORDER BY created_at DESC 
+          LIMIT 1
+        ) AS msg_type,
+        COUNT(CASE WHEN m.is_read = 0 AND m.sender_id != ? THEN 1 END) AS unread_count,
+        MAX(IF(m.sender_id = ?, m.receiver_id, m.sender_id)) AS other_user_id,
+        'https://picsum.photos/id/1005/100/100' AS avatar_url
       FROM messages m
-      WHERE sender_id = ? OR receiver_id = ?
-      GROUP BY session_id
+      WHERE m.sender_id = ? OR m.receiver_id = ?
+      GROUP BY m.session_id
       ORDER BY last_time DESC
     `, [user_id, user_id, user_id, user_id]);
 
@@ -69,18 +83,17 @@ router.get('/list', async (req, res) => {
       return res.json({ code: 200, data: [] });
     }
 
-    // 2. 再根据会话里的 other_user_id，批量查出用户名
+    // 2. 再根据会话里的 other_user_id，批量查出对方用户名
     const otherUserIds = sessions.map(s => s.other_user_id);
     const [users] = await db.execute(`
       SELECT user_id, username FROM users WHERE user_id IN (${otherUserIds.join(',')})
     `);
 
-    // 合并数据
     const userMap = {};
     users.forEach(u => userMap[u.user_id] = u.username);
     const list = sessions.map(s => ({
       ...s,
-      username: userMap[s.other_user_id] || ''
+      username: userMap[s.other_user_id] || '未知用户'
     }));
 
     res.json({ code: 200, data: list });
@@ -162,7 +175,7 @@ router.get('/history', async (req, res) => {
     // 拉取该会话下的所有消息，按时间排序
     const [messages] = await db.execute(`
       SELECT 
-        id, sender_id, receiver_id, content, is_read, created_at
+        id, sender_id, receiver_id, content, is_read, created_at, msg_type
       FROM messages
       WHERE session_id = ?
         AND (sender_id = ? OR receiver_id = ?)

@@ -511,14 +511,13 @@ router.post('/deletePublished', async (req, res) => {
 // 获取商品详情
 router.get('/detail', async (req, res) => {
   try {
-    const { goods_id } = req.query;
+    const { goods_id, delete_detail = false } = req.query;
     if (!goods_id) {
       return res.status(400).json({ code: 400, msg: 'goods_id 不能为空' });
     }
-
     const connection = await db.getConnection();
     try {
-      const [[goods]] = await connection.query(
+      let sql = 
         `SELECT 
           g.goods_id, 
           g.name, 
@@ -532,14 +531,17 @@ router.get('/detail', async (req, res) => {
           g.audit_status,
           g.publisher_name, 
           g.publisher_id,
+          g.is_deleted,
           c.name AS category_name
          FROM goods g
          LEFT JOIN category c ON g.category_id = c.category_id
-         WHERE g.goods_id = ?
-         AND g.is_deleted = 0`,
-        [goods_id]
-      );
-
+         WHERE g.goods_id = ?`
+      let params = [goods_id];
+      // 正常需要过滤已删除商品，但是订单详情和收藏列表是需要展示已删除商品详情的
+      if (!delete_detail) {
+        sql += ' AND g.is_deleted = 0';
+      }
+      const [[goods]] = await connection.query(sql, params);
       if (!goods) {
         return res.status(404).json({ code: 404, msg: '商品不存在' });
       }
@@ -710,7 +712,7 @@ router.get('/admin/list', async (req, res) => {
     const total = totalRows[0].total;
     const [rows] = await db.query(sql, params);
 
-    // 7. 🔥 优化：给商品追加状态文字（前端直接用，非常友好）
+    // 7. 给商品追加状态文字
     const formatList = rows.map(item => ({
       ...item,
       // 审核状态文字
