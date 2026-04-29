@@ -48,10 +48,14 @@ function checkDuplicate(dirName) {
 
       const targetDir = path.join(__dirname, '../public/uploads', dirName);
       const targetPath = path.join(targetDir, fileName);
-      const finalUrl = `http://localhost:3000/uploads/${dirName}/${fileName}`;
+      const finalUrl = `http://192.168.3.116:3000/uploads/${dirName}/${fileName}`;
 
-      // 查询是否已存在
-      const [rows] = await db.execute('SELECT url FROM uploads WHERE md5 = ?', [hash]);
+      // 查询时同时匹配 md5 和 url 里的目录部分--发布与沟通不应该互相影响，独立处理
+      const [rows] = await db.execute(
+        'SELECT url FROM uploads WHERE md5 = ? AND url LIKE ?', 
+        [hash, `%/uploads/${dirName}/%`]
+      );
+
       if (rows.length > 0) {
         fs.unlinkSync(req.file.path);
         return res.json({ code: 200, data: { url: rows[0].url } });
@@ -85,11 +89,12 @@ const saveRecord = async (req, res, next) => {
 
 // 商品图片
 router.post('/image', uploadPublish.single('file'), checkDuplicate('publish'), saveRecord, (req, res) => {
+  console.log('publish', req.file.finalUrl);
   res.json({ code: 200, data: { url: req.file.finalUrl } });
 });
 
 // 聊天图片
-router.post('/chatImage', uploadChat.single('file'), checkDuplicate('chat'), saveRecord, (req, res) => {
+router.post('/chatImage', uploadChat.single('file'), checkDuplicate('chat'), saveRecord, (req, res) => {  
   res.json({ code: 200, data: { url: req.file.finalUrl } });
 });
 
