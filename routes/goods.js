@@ -325,7 +325,7 @@ router.get('/pending-audit', async (req, res) => {
   }
 });
 
-// 管理端-审核商品（通过/拒绝）
+// 管理端-审核商品（通过）
 router.post('/audit', async (req, res) => {
   try {
     const { goods_id, auditor_id, audit_status, audit_remark = '' } = req.body;
@@ -600,12 +600,26 @@ router.post('/update', async (req, res) => {
     await connection.beginTransaction();
 
     try {
-      // 检查商品是否存在
-      const [[goods]] = await connection.query('SELECT * FROM goods WHERE goods_id = ?', [goods_id]);
+      // 查询商品当前状态 + 订单状态
+      const [[goods]] = await connection.query(
+        'SELECT audit_status, order_status FROM goods WHERE goods_id = ?',
+        [goods_id]
+      );
       if (!goods) {
         await connection.rollback();
         connection.release();
         return res.status(404).json({ code: 404, msg: '商品不存在' });
+      }
+      const currentAuditStatus = goods.audit_status;
+      const currentOrderStatus = goods.order_status;
+      let newAuditStatus = currentAuditStatus;
+      // 规则：
+      // 1. 有订单 → 不进审核（保证订单正常）
+      // 2. 无订单 → 待审核/已拒绝/已上架 → 全部进审核
+      if (currentOrderStatus === 0) {
+        if ([0, 1, 2].includes(currentAuditStatus)) {
+          newAuditStatus = 0; // 重新进入待审核
+        }
       }
       const finalAddressId = address_id ? Number(address_id) : null;
       // 执行更新（使用脱敏后内容）
@@ -621,7 +635,8 @@ router.post('/update', async (req, res) => {
            category_id = ?,
            address_id = ?,
            contact_name = ?,
-           contact_phone = ?
+           contact_phone = ?,
+           audit_status = ?
          WHERE goods_id = ?`,
         [
           safeName,
@@ -634,6 +649,7 @@ router.post('/update', async (req, res) => {
           finalAddressId,
           contact_name || '',
           contact_phone || '',
+          newAuditStatus,
           goods_id
         ]
       );
@@ -753,7 +769,7 @@ router.get('/admin/list', async (req, res) => {
 // 管理员-商品操作（审核/上架/下架/删除 统一接口）
 router.post('/admin/operate', async (req, res) => {
   try {
-    const { goods_id, action } = req.body;
+    const { goods_id, action, audit_remark } = req.body;
 
     // 1. 校验参数
     if (!goods_id || !action) {
@@ -776,8 +792,9 @@ router.post('/admin/operate', async (req, res) => {
     switch (action) {
       // 审核通过（上架）
       case 'pass':
-        if (currentStatus !== 0) {
-          return res.status(400).json({ code: 400, message: '仅待审核商品可通过' });
+        // 待审核(0) + 已拒绝(2) → 都可以审核通过/拒绝
+        if (currentStatus !== 0 && currentStatus !== 2) {
+          return res.status(400).json({ code: 400, message: '仅待审核或已拒绝商品可通过' });
         }
         updateSql = `UPDATE goods SET audit_status = 1 WHERE goods_id = ?`;
         updateParams = [goods_id];
@@ -786,11 +803,11 @@ router.post('/admin/operate', async (req, res) => {
 
       // 审核拒绝
       case 'reject':
-        if (currentStatus !== 0) {
-          return res.status(400).json({ code: 400, message: '仅待审核商品可拒绝' });
+        if (currentStatus !== 0 && currentStatus !== 2) {
+          return res.status(400).json({ code: 400, message: '仅待审核或已拒绝商品可拒绝' });
         }
-        updateSql = `UPDATE goods SET audit_status = 2 WHERE goods_id = ?`;
-        updateParams = [goods_id];
+        updateSql = `UPDATE goods SET audit_status = 2, audit_remark = ? WHERE goods_id = ?`;
+        updateParams = [audit_remark, goods_id];
         successMsg = '审核拒绝';
         break;
 

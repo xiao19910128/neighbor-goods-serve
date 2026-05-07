@@ -38,7 +38,10 @@ const uploadChat = createUpload('chat');
 // MD5 去重中间件（通用，支持目录）
 function checkDuplicate(dirName) {
   return async (req, res, next) => {
-    if (!req.file) return next();
+    // req.file 为空时，直接返回错误，而不是 next()
+    if (!req.file) {
+      return res.status(400).json({ code: 400, message: '未接收到文件' });
+    }
 
     try {
       const buffer = fs.readFileSync(req.file.path);
@@ -48,7 +51,7 @@ function checkDuplicate(dirName) {
 
       const targetDir = path.join(__dirname, '../public/uploads', dirName);
       const targetPath = path.join(targetDir, fileName);
-      const finalUrl = `http://192.168.3.116:3000/uploads/${dirName}/${fileName}`;
+      const finalUrl = `http://192.168.3.121:3000/uploads/${dirName}/${fileName}`;
 
       // 查询时同时匹配 md5 和 url 里的目录部分--发布与沟通不应该互相影响，独立处理
       const [rows] = await db.execute(
@@ -68,8 +71,8 @@ function checkDuplicate(dirName) {
       req.file.md5 = hash;
       next();
     } catch (err) {
-      console.error('MD5 失败', err);
-      next();
+      // 异常必须返回响应，不能 next()
+      return res.status(500).json({ code: 500, message: '上传处理失败' });
     }
   };
 }
