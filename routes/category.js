@@ -16,6 +16,9 @@ router.get('/query', async (req, res) => {
       params.push(`%${name.trim()}%`); // % 是MySQL模糊查询通配符，匹配任意字符序列
     }
 
+    // 按更新时间倒序排序
+    sql += ' ORDER BY update_at DESC';
+
     // 3. 执行查询--params需要过滤的参数数组
     const [rows] = await db.execute(sql, params); // 注意：此处用的是execute而非query，因为我们要获取插入行的ID
     // 4. 返回结果

@@ -29,6 +29,7 @@ app.use('/api/proxy', proxyRouter); // 代理腾讯地图逆地理编码 APIuter
 app.use('/api/address', addressRouter);
 app.use('/api/message', messageRouter);
 app.use('/api/orders', ordersRouter);
+const db = require('./config/db');
 
 //  定时任务：每天清理 30 天前已读的消息
 const cleanExpiredMessages = async () => {
